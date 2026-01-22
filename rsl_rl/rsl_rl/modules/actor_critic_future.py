@@ -451,8 +451,7 @@ class ActorCriticFuture(nn.Module):
         self.num_single_motion_obs = int(num_motion_observations / num_motion_steps)
         
         # Critic network (uses privileged observations without future motion)
-        self.num_privileged_motion_observations = 77
-        self.critic_motion_encoder = MotionEncoder(activation_fn, self.num_privileged_motion_observations, num_motion_steps, motion_latent_dim)
+        self.critic_motion_encoder = MotionEncoder(activation_fn, self.num_single_motion_obs, num_motion_steps, motion_latent_dim)
         
         critic_input_dim = num_critic_observations - num_motion_observations + motion_latent_dim + self.num_single_motion_obs
         
@@ -522,13 +521,13 @@ class ActorCriticFuture(nn.Module):
 
     def evaluate(self, critic_observations, **kwargs):
         # Critic uses privileged observations (no future motion)
-        motion_obs = critic_observations[:, :self.num_privileged_motion_observations]
-        motion_single_obs = critic_observations[:, :self.num_privileged_motion_observations]
+        motion_obs = critic_observations[:, :self.num_motion_observations]
+        motion_single_obs = critic_observations[:, :self.num_single_motion_obs]
         motion_latent = self.critic_motion_encoder(motion_obs)
-
+        
         backbone_input = torch.cat([
-            critic_observations[:, self.num_privileged_motion_observations:],
-            motion_single_obs,
+            critic_observations[:, self.num_motion_observations:], 
+            motion_single_obs, 
             motion_latent
         ], dim=1)
         
