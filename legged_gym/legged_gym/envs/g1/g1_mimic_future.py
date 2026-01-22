@@ -3,6 +3,7 @@ from isaacgym import gymapi, gymtorch
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 from legged_gym.envs.g1.g1_mimic_distill import G1MimicDistill
 from .g1_mimic_future_config import G1MimicStuFutureCfg
@@ -28,12 +29,12 @@ class G1MimicFuture(G1MimicDistill):
         # Evaluation mode parameters
         self.evaluation_mode = getattr(cfg.env, 'evaluation_mode', False)
         self.force_full_masking = getattr(cfg.env, 'force_full_masking', False)
-        
-        
+
+
         # Initialize FALCON-style curriculum force application flag BEFORE super().__init__
         # This is needed because reset_idx is called during parent initialization
         self.enable_force_curriculum = getattr(cfg.env, 'enable_force_curriculum', False)
-        
+
         # Initialize force curriculum attributes with default values before calling super().__init__
         # This prevents AttributeError during reset_idx call in parent initialization
         if self.enable_force_curriculum:
@@ -42,7 +43,19 @@ class G1MimicFuture(G1MimicDistill):
             # Initialize with empty values - will be properly set after super().__init__()
             self.episode_length_counter = None
             self.force_scale = None
+
+        # Store original motion configuration for dynamic decompose curriculum
+        self.original_motion_file = cfg.motion.motion_file
+        self.original_motion_decompose = cfg.motion.motion_decompose
+        self.enable_motion_decompose_curriculum = True  # Will be set by runner if enabled
+        self.current_decompose_mode = None  # Track current decompose mode (10s, 30s, or None)
+        self.decompose_phase = 1  # Current decompose curriculum phase
         
+        # Motion decompose curriculum settings (three-stage progressive)
+        self.decompose_phase_1_iters = 5000    # iterations for 10s decompose (first 17%)
+        self.decompose_phase_2_iters = 10000   # iterations for 30s decompose (17%-33%)
+        self.decompose_phase_3_iters = 30000   # iterations for no decompose (67%-100%)
+
         # Call parent constructor
         super().__init__(cfg, sim_params, physics_engine, sim_device, headless)
         
@@ -785,4 +798,147 @@ class G1MimicFuture(G1MimicDistill):
                 None,  # No torques
                 gymapi.ENV_SPACE
             )
-    
+
+    def update_motion_decompose_curriculum(self, iteration):
+        """
+        Update motion decompose mode based on training iteration.
+        Phase 1 (0-10 iters): 10s decompose
+        Phase 2 (10-20 iters): 30s decompose
+        Phase 3 (20+ iters): No decompose (full motions)
+        """
+        if not self.enable_motion_decompose_curriculum:
+            print(f"*****************Not enable_motion_decompose_curriculum")
+            return False
+        phase_1_threshold = self.decompose_phase_1_iters 
+        phase_2_threshold = self.decompose_phase_2_iters 
+        phase_3_threshold = self.decompose_phase_3_iters
+
+        print(f"*****************start motion_decompose_curriculum {phase_1_threshold}, {phase_2_threshold}, {phase_3_threshold}")
+        new_decompose_mode = None
+        new_phase = 1
+
+        if iteration < phase_1_threshold:
+            new_decompose_mode = 10.0
+            new_phase = 1
+        elif iteration < phase_2_threshold:
+            new_decompose_mode = 30.0
+            new_phase = 2
+        elif iteration < phase_3_threshold:
+            new_decompose_mode = None  # No decompose
+            new_phase = 3
+        else:
+            # Beyond phase 3, keep full motions
+            new_decompose_mode = None
+            new_phase = 3
+
+        # Print current status every iteration for debugging
+        mode_str = f"{new_decompose_mode}s decompose" if new_decompose_mode else "FULL motions (no decompose)"
+        print(f"\n[DEBUG] Iteration {iteration}: Phase {new_phase}, Mode: {mode_str}")
+
+        # Check if mode changed
+        if new_decompose_mode != self.current_decompose_mode:
+            print(f"\n{'='*80}")
+            print(f"MOTION DECOMPOSE CURRICULUM SWITCH at iteration {iteration}")
+            print(f"{'='*80}")
+            if self.current_decompose_mode:
+                print(f"  Previous mode: {self.current_decompose_mode}s decompose")
+            else:
+                print(f"  Previous mode: FULL motions (no decompose)")
+            if new_decompose_mode:
+                print(f"  New mode: {new_decompose_mode}s decompose (Phase {new_phase})")
+            else:
+                print(f"  New mode: FULL motions (no decompose) (Phase {new_phase})")
+            print(f"{'='*80}\n")
+
+            # Re-load motion library with new decompose setting
+            self._reload_motion_library_with_decompose(new_decompose_mode)
+            self.current_decompose_mode = new_decompose_mode
+            self.decompose_phase = new_phase
+            return True
+
+        return False
+
+    def _reload_motion_library_with_decompose(self, decompose_length_s):
+        """
+        Reload motion library with specified decompose length.
+        decompose_length_s: float or None
+            - 10.0: decompose into 10s segments
+            - 30.0: decompose into 30s segments
+            - None: no decompose (load full motions)
+        """
+        import sys
+        import os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../..'))
+        from pose.utils.motion_lib_pkl import MotionLib
+
+        # Determine decompose setting
+        if decompose_length_s is None:
+            motion_decompose = False
+            decompose_str = "FULL MOTIONS (no decompose)"
+        else:
+            motion_decompose = True
+            decompose_str = f"{decompose_length_s}s DECOMPOSE"
+
+        print(f"\n[DEBUG] Reloading motion library...")
+        print(f"  - Motion file: {self.original_motion_file}")
+        print(f"  - Motion decompose: {motion_decompose}")
+        print(f"  - Decompose mode: {decompose_str}")
+        if motion_decompose:
+            print(f"  - Decompose length: {decompose_length_s} seconds")
+
+        # Create new motion library with new settings
+        self._motion_lib = MotionLib(
+            motion_file=self.original_motion_file,
+            device=self.device,
+            motion_decompose=motion_decompose,
+            decompose_length_s=decompose_length_s if motion_decompose else 10.0,
+            motion_smooth=getattr(self.cfg.motion, 'motion_smooth', True),
+            motion_height_adjust=getattr(self.cfg.motion, 'motion_height_adjust', False),
+            sample_ratio=getattr(self.cfg.motion, 'sample_ratio', 1.0)
+        )
+
+        # Update motion-specific settings
+        num_motions = self._motion_lib.num_motions()
+        self.motion_names = self._motion_lib.get_motion_names()
+        self._key_body_ids_motion = self._motion_lib.get_key_body_idx(
+            key_body_names=self.cfg.motion.key_bodies
+        )
+
+        # Update motion buffers
+        self.num_motions = num_motions
+        self._motion_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._motion_ids = self._motion_lib.sample_motions(self.num_envs)
+
+        # Re-initialize motion difficulty
+        self.motion_difficulty = 10 * torch.ones((num_motions), device=self.device, dtype=torch.float)
+        self.mean_motion_difficulty = 10.
+
+        # Debug: Show motion lengths to prove decompose is working
+        print(f"\n[DEBUG] Motion library reloaded successfully!")
+        print(f"  - Total number of motions: {num_motions}")
+        print(f"  - Sample motion names (first 5): {[self.motion_names[i] if i < len(self.motion_names) else 'N/A' for i in range(5)]}")
+
+        # Show actual motion lengths
+        motion_lengths = self._motion_lib._motion_lengths.cpu().numpy()
+        print(f"\n[DEBUG] Motion length statistics:")
+        print(f"  - Min length: {motion_lengths.min():.2f}s")
+        print(f"  - Max length: {motion_lengths.max():.2f}s")
+        print(f"  - Mean length: {motion_lengths.mean():.2f}s")
+        print(f"  - Median length: {np.median(motion_lengths):.2f}s")
+
+        # Show unique lengths to prove decompose
+        unique_lengths = np.unique(np.round(motion_lengths, 2))
+        if len(unique_lengths) <= 10:
+            print(f"  - Unique lengths: {unique_lengths}")
+        else:
+            print(f"  - Sample of unique lengths (first 10): {unique_lengths[:10]}")
+
+        if decompose_length_s is None:
+            print(f"\n[DEBUG] ✓ Verified: Using FULL original motion lengths (no decomposition)")
+        else:
+            print(f"\n[DEBUG] ✓ Verified: Using {decompose_length_s}s decomposed motion segments")
+            decomposed_count = np.sum(motion_lengths <= decompose_length_s + 1.0)
+            print(f"  - Motions <= {decompose_length_s}s: {decomposed_count}/{num_motions} ({100*decomposed_count/num_motions:.1f}%)")
+
+        print(f"{'='*80}\n")
+

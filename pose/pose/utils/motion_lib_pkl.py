@@ -34,9 +34,10 @@ def smooth(x, box_pts, device):
 
 
 class MotionLib:
-    def __init__(self, motion_file, device, 
-                 motion_decompose=False, 
-                 motion_smooth=True, 
+    def __init__(self, motion_file, device,
+                 motion_decompose=False,
+                 decompose_length_s=10.0,
+                 motion_smooth=True,
                  motion_height_adjust=False,
                  sample_ratio=1.0 # only sample a portion of the motion
                  ):
@@ -44,16 +45,18 @@ class MotionLib:
 
         # motion augmentation by decomposing long motion into short motions
         self._motion_decompose = motion_decompose
+        # motion decompose length in seconds (default 10s)
+        self._decompose_length_s = decompose_length_s
         # motion smoothing
         self._motion_smooth = motion_smooth
         # motion height adjustment
         self._motion_height_adjust = motion_height_adjust
         # sample a portion of the motion
         self._sample_ratio = sample_ratio
-        
+
         # load motions
         self._load_motions(motion_file)
-        
+
         
     def _load_motions(self, motion_file):
         self._motion_names = []
@@ -80,6 +83,8 @@ class MotionLib:
         num_motion_files = len(motion_files)
         
         num_sub_motions_total = 0
+        num_original_motions = 0
+        original_motion_lengths = []
             
         for i in tqdm(range(num_motion_files), desc="[MotionLib] Loading motions"):
             if torch.rand(1) > self._sample_ratio and num_motion_files > 1:
@@ -114,43 +119,63 @@ class MotionLib:
                 # adjust the height of the root position
                 root_pos[..., 2] -= lowest_body_part
                 
-            try:
-                self._add_motions(root_pos, root_rot, dof_pos, local_body_pos, fps, curr_weight, curr_file)
-            except Exception as e:
-                print(f"Error adding motion {curr_file}: {e}")
-                continue
-            
-            
+            # Track original motion statistics BEFORE processing
+            num_original_motions += 1
+            original_motion_lengths.append(motion_len_s)
+
             if self._motion_decompose:
                 # Decompose long motion into short motions
-                base_motion_len_s = 10.0 # 10 seconds for each sub-motion
-                # base_motion_len_s = 20.0 # 20 seconds for each sub-motion
-                # base_motion_len_s = 30.0 # 30 seconds for each sub-motion
+                base_motion_len_s = self._decompose_length_s  # Use configured decompose length
                 if motion_len_s < base_motion_len_s:
+                    # Motion is already short, add it as is
+                    try:
+                        self._add_motions(root_pos, root_rot, dof_pos, local_body_pos, fps, curr_weight, curr_file)
+                    except Exception as e:
+                        print(f"Error adding motion {curr_file}: {e}")
+                        continue
+                else:
+                    # divide motion into sub-motions of base_motion_len
+                    num_sub_motions = int(motion_len_s / base_motion_len_s)
+                    # if the motion is longer than the base_motion_len, add one more sub-motion
+                    if motion_len_s > base_motion_len_s * num_sub_motions:
+                        num_sub_motions += 1
+
+                    num_sub_motions_total += num_sub_motions
+                    for i in range(num_sub_motions):
+                        start_idx = int(i * base_motion_len_s * fps)
+                        end_idx = int(start_idx + base_motion_len_s * fps)
+
+                        # get the sub-motion
+                        sub_root_pos = root_pos[start_idx:end_idx]
+                        sub_root_rot = root_rot[start_idx:end_idx]
+                        sub_dof_pos = dof_pos[start_idx:end_idx]
+                        sub_local_body_pos = local_body_pos[start_idx:end_idx]
+                        # sub_weight = curr_weight + i # we increase the weight of the sub-motion by i
+                        sub_weight = curr_weight
+                        self._add_motions(sub_root_pos, sub_root_rot, sub_dof_pos, sub_local_body_pos, fps, sub_weight, curr_file)
+                    # print(f"Decomposed {curr_file} into {num_sub_motions} sub-motions")
+            else:
+                # No decompose, add the original motion as is
+                try:
+                    self._add_motions(root_pos, root_rot, dof_pos, local_body_pos, fps, curr_weight, curr_file)
+                except Exception as e:
+                    print(f"Error adding motion {curr_file}: {e}")
                     continue
-                # divide motion into sub-motions of base_motion_len
-                num_sub_motions = int(motion_len_s / base_motion_len_s)
-                # if the motion is longer than the base_motion_len, add one more sub-motion
-                if motion_len_s > base_motion_len_s * num_sub_motions:
-                    num_sub_motions += 1
-                
-                num_sub_motions_total += num_sub_motions
-                for i in range(num_sub_motions):
-                    start_idx = int(i * base_motion_len_s * fps)
-                    end_idx = int(start_idx + base_motion_len_s * fps)
-                    
-                    # get the sub-motion
-                    sub_root_pos = root_pos[start_idx:end_idx]
-                    sub_root_rot = root_rot[start_idx:end_idx]
-                    sub_dof_pos = dof_pos[start_idx:end_idx]
-                    sub_local_body_pos = local_body_pos[start_idx:end_idx]
-                    # sub_weight = curr_weight + i # we increase the weight of the sub-motion by i
-                    sub_weight = curr_weight
-                    self._add_motions(sub_root_pos, sub_root_rot, sub_dof_pos, sub_local_body_pos, fps, sub_weight, curr_file)
-                # print(f"Decomposed {curr_file} into {num_sub_motions} sub-motions")
         
         print(f"Total number of sub-motions: {num_sub_motions_total}")
-                        
+
+        # Print BEFORE processing statistics
+        if self._motion_decompose:
+            print(f"\n{'='*80}")
+            print(f"MOTION DECOMPOSE STATISTICS (BEFORE PROCESSING):")
+            print(f"{'='*80}")
+            print(f"  - Number of original motions: {num_original_motions}")
+            if original_motion_lengths:
+                print(f"  - Min length (before decompose): {min(original_motion_lengths):.2f}s")
+                print(f"  - Max length (before decompose): {max(original_motion_lengths):.2f}s")
+                print(f"  - Mean length (before decompose): {sum(original_motion_lengths)/len(original_motion_lengths):.2f}s")
+            print(f"{'='*80}\n")
+
         assert len(self._motion_weights) == len(self._motion_names), f"len(self._motion_weights) = {len(self._motion_weights)}, len(self._motion_names) = {len(self._motion_names)}"
         assert len(self._motion_weights) == len(self._motion_files), f"len(self._motion_weights) = {len(self._motion_weights)}, len(self._motion_files) = {len(self._motion_files)}"
         assert len(self._motion_weights) == len(self._motion_fps), f"len(self._motion_weights) = {len(self._motion_weights)}, len(self._motion_fps) = {len(self._motion_fps)}"
@@ -181,8 +206,21 @@ class MotionLib:
         
         num_motions = self.num_motions()
         self._motion_ids = torch.arange(num_motions, dtype=torch.long, device=self._device)
-        
+
         total_len = self.get_total_length()
+
+        # Print AFTER processing statistics
+        if self._motion_decompose:
+            print(f"\n{'='*80}")
+            print(f"MOTION DECOMPOSE STATISTICS (AFTER PROCESSING):")
+            print(f"{'='*80}")
+            print(f"  - Number of motions after decompose: {num_motions}")
+            print(f"  - Min length (after decompose): {self._motion_lengths.min().item():.2f}s")
+            print(f"  - Max length (after decompose): {self._motion_lengths.max().item():.2f}s")
+            print(f"  - Mean length (after decompose): {self._motion_lengths.mean().item():.2f}s")
+            print(f"  - Total length: {total_len:.3f}s")
+            print(f"{'='*80}\n")
+
         print("Loaded {:d} motions with a total length of {:.3f}s.".format(num_motions, total_len))
 
     def _add_motions(self, root_pos, root_rot, dof_pos, local_body_pos, fps, curr_weight, curr_file):

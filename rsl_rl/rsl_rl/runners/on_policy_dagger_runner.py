@@ -235,6 +235,12 @@ class OnPolicyDaggerRunner:
         for it in range(self.current_learning_iteration, tot_iter):
             start = time.time()
             hist_encoding = it % self.dagger_update_freq == 0
+
+            # Update motion decompose curriculum (for G1MimicFuture)
+            if hasattr(self.env, 'update_motion_decompose_curriculum'):
+                print(f"*****************************************************************update_motion_decompose_curriculum")
+                self.env.update_motion_decompose_curriculum(it)
+           
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
