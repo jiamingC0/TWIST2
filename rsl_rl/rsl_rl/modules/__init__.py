@@ -33,3 +33,4 @@ from .actor_critic_mimic import ActorCriticMimic
 from .dagger_actor import DAggerActor
 from .actor_critic_teleop import ActorCriticTeleop
 from .actor_critic_future import ActorCriticFuture
+from .actor_critic_future_cjm import ActorCriticFutureCJM

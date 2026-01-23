@@ -11,8 +11,8 @@ robot_name="g1"
 exptid=$1
 device=$2
 
-task_name="${robot_name}_stu_future"
-proj_name="${robot_name}_stu_future"
+task_name="${robot_name}_stu_future_cjm"
+proj_name="${robot_name}_stu_future_cjm"
 
 
 # Run the training script
