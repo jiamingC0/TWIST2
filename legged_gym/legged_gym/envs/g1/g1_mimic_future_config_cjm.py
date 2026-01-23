@@ -206,7 +206,7 @@ class G1MimicStuFutureCJMCfg(G1MimicPrivCfg):
             action_rate = -0.05
             # action_rate = -0.01
             feet_air_time = 5.0
-            ang_vel_xy = -0.01            
+            # ang_vel_xy = -0.01            
             # ankle_dof_acc = -5e-8 * 2
             # ankle_dof_vel = -1e-4 * 2
             
