@@ -8,27 +8,51 @@ TAR_MOTION_STEPS_FUTURE = [0]
 class G1MimicStuFutureCJMCfg(G1MimicPrivCfg):
     """Student policy config with future motion support and curriculum masking.
     Extends existing G1MimicPrivCfg to add future motion capabilities."""
-    
+
+    # ===================== Key Bodies Configuration =====================
+    # Different versions of key_bodies for different tracking scenarios:
+
+    # 版本1（TWIST2）[左橡胶手,右橡胶手,左踝关节(滚动),右踝关节(滚动), 左膝,右膝,左肘,右肘,头部动捕标记点]
+    # key_bodies_list = ["left_rubber_hand", "right_rubber_hand", "left_ankle_roll_link", "right_ankle_roll_link", "left_knee_link", "right_knee_link", "left_elbow_link", "right_elbow_link", "head_mocap"] # 9 key bodies
+
+    # 版本2（track）[骨盆，左髋关节(滚动)，左膝，左踝关节(滚动)，右髋关节(滚动)，右膝，右踝关节(滚动)，躯干，左肩关节(滚动)，左肘，左手腕关节(滚动)，右肩关节(滚动)，右肘，右手腕关节(滚动)]
+    # key_bodies_list = ["pelvis", "left_hip_roll_link", "left_knee_link", "left_ankle_roll_link", "right_hip_roll_link", "right_knee_link", "right_ankle_roll_link",
+    # "torso_link", "left_shoulder_roll_link", "left_elbow_link", "left_wrist_yaw_link", "right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link"] # 14 key bodies
+
+    # 版本3（TWIST2 + track）[骨盆，左髋关节(滚动)，左膝，左踝关节(滚动)，右髋关节(滚动)，右膝，右踝关节(滚动)，躯干，左肩关节(滚动)，左肘，左手腕关节(滚动)，右肩关节(滚动)，右肘，右手腕关节(滚动)，左橡胶手,右橡胶手,头部动捕标记点]
+    # key_bodies_list = ["pelvis", "left_hip_roll_link", "left_knee_link", "left_ankle_roll_link", "right_hip_roll_link", "right_knee_link", "right_ankle_roll_link",
+    # "torso_link", "left_shoulder_roll_link", "left_elbow_link", "left_wrist_yaw_link", "right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link",
+    # "left_rubber_hand", "right_rubber_hand", "head_mocap"] # 17 key bodies
+
+    # Currently using Version 2 (14 bodies)
+    key_bodies_list = ["pelvis", "left_hip_roll_link", "left_knee_link", "left_ankle_roll_link",
+                       "right_hip_roll_link", "right_knee_link", "right_ankle_roll_link",
+                       "torso_link", "left_shoulder_roll_link", "left_elbow_link",
+                       "left_wrist_yaw_link", "right_shoulder_roll_link", "right_elbow_link",
+                       "right_wrist_yaw_link"]
+    num_key_bodies = len(key_bodies_list)  # Auto-calculate from key_bodies_list
+    # =========================================================
+
     class env:
         obs_type = 'student_future'
-        
+
         tar_motion_steps_priv = [1, 5, 10, 15, 20, 25, 30, 35, 40, 45,
                          50, 55, 60, 65, 70, 75, 80, 85, 90, 95,]
-        
+
         # Keep original student motion steps (current frame only)
         tar_motion_steps = [0]
-        
+
         #from G1MimicPrivCfg.env
         num_envs = 4096  #4096
         num_actions = 29
         n_priv_latent = 4 + 1 + 2*num_actions
         extra_critic_obs = 3
         n_priv = 0
-        n_priv_info = 3 + 3 + 4 + 3*9 + 2 + 4 + 1 + 2*num_actions # base lin vel, root height, key body pos, contact mask, priv latent
+        n_priv_info = 3 + 3 + 4 + 3*G1MimicStuFutureCJMCfg.num_key_bodies + 2 + 4 + 1 + 2*num_actions # base lin vel, root height, key body pos, contact mask, priv latent
         history_len = 10
-        
+
         n_proprio = 3 + 2 + 3*num_actions
-        n_priv_mimic_obs = len(tar_motion_steps_priv) * (21 + num_actions + 3*9) # Hardcode for now, 9 is base, 9 is the number of key bodies
+        n_priv_mimic_obs = len(tar_motion_steps_priv) * (21 + num_actions + 3*G1MimicStuFutureCJMCfg.num_key_bodies) # Auto-calculate from num_key_bodies
         
         # Future motion frames (additional input, not in history)
         # tar_motion_steps_future = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
@@ -148,19 +172,9 @@ class G1MimicStuFutureCJMCfg(G1MimicPrivCfg):
         
         # from G1MimicPrivCfg.motion
         reset_consec_frames = 30
-        # 版本1（TWIST2）[左橡胶手,右橡胶手,左踝关节(滚动),右踝关节(滚动), 左膝,右膝,左肘,右肘,头部动捕标记点]
-        # key_bodies = ["left_rubber_hand", "right_rubber_hand", "left_ankle_roll_link", "right_ankle_roll_link", "left_knee_link", "right_knee_link", "left_elbow_link", "right_elbow_link", "head_mocap"] # 9 key bodies
-        # 版本2（track）[骨盆，左髋关节(滚动)，左膝，左踝关节(滚动)，右髋关节(滚动)，右膝，右踝关节(滚动)，躯干，左肩关节(滚动)，左肘，左手腕关节(滚动)，右肩关节(滚动)，右肘，右手腕关节(滚动)]
-        # key_bodies = ["pelvis", "left_hip_roll_link", "left_knee_link", "left_ankle_roll_link", "right_hip_roll_link", "right_knee_link", "right_ankle_roll_link", 
-        # "torso_link", "left_shoulder_roll_link", "left_elbow_link", "left_wrist_yaw_link", "right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link"] # 14 key bodies
-        # 版本3（TWIST2 + track）[骨盆，左髋关节(滚动)，左膝，左踝关节(滚动)，右髋关节(滚动)，右膝，右踝关节(滚动)，躯干，左肩关节(滚动)，左肘，左手腕关节(滚动)，右肩关节(滚动)，右肘，右手腕关节(滚动)，左橡胶手,右橡胶手,头部动捕标记点]
-        # key_bodies = ["pelvis", "left_hip_roll_link", "left_knee_link", "left_ankle_roll_link", "right_hip_roll_link", "right_knee_link", "right_ankle_roll_link", 
-        # "torso_link", "left_shoulder_roll_link", "left_elbow_link", "left_wrist_yaw_link", "right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link"，
-        # "left_rubber_hand", "right_rubber_hand", "head_mocap"] # 17 key bodies
-        
-        # 版本2
-        key_bodies = ["pelvis", "left_hip_roll_link", "left_knee_link", "left_ankle_roll_link", "right_hip_roll_link", "right_knee_link", "right_ankle_roll_link", 
-        "torso_link", "left_shoulder_roll_link", "left_elbow_link", "left_wrist_yaw_link", "right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link"] # 14 key bodies
+
+        # Use the same key_bodies list defined at class level to ensure consistency
+        key_bodies = G1MimicStuFutureCJMCfg.key_bodies_list
         
         upper_key_bodies = ["left_rubber_hand", "right_rubber_hand", "left_elbow_link", "right_elbow_link", "head_mocap"]
         sample_ratio = 1.0
