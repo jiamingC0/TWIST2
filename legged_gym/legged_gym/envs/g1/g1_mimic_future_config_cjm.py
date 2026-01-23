@@ -148,7 +148,20 @@ class G1MimicStuFutureCJMCfg(G1MimicPrivCfg):
         
         # from G1MimicPrivCfg.motion
         reset_consec_frames = 30
-        key_bodies = ["left_rubber_hand", "right_rubber_hand", "left_ankle_roll_link", "right_ankle_roll_link", "left_knee_link", "right_knee_link", "left_elbow_link", "right_elbow_link", "head_mocap"] # 9 key bodies
+        # 版本1（TWIST2）[左橡胶手,右橡胶手,左踝关节(滚动),右踝关节(滚动), 左膝,右膝,左肘,右肘,头部动捕标记点]
+        # key_bodies = ["left_rubber_hand", "right_rubber_hand", "left_ankle_roll_link", "right_ankle_roll_link", "left_knee_link", "right_knee_link", "left_elbow_link", "right_elbow_link", "head_mocap"] # 9 key bodies
+        # 版本2（track）[骨盆，左髋关节(滚动)，左膝，左踝关节(滚动)，右髋关节(滚动)，右膝，右踝关节(滚动)，躯干，左肩关节(滚动)，左肘，左手腕关节(滚动)，右肩关节(滚动)，右肘，右手腕关节(滚动)]
+        # key_bodies = ["pelvis", "left_hip_roll_link", "left_knee_link", "left_ankle_roll_link", "right_hip_roll_link", "right_knee_link", "right_ankle_roll_link", 
+        # "torso_link", "left_shoulder_roll_link", "left_elbow_link", "left_wrist_yaw_link", "right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link"] # 14 key bodies
+        # 版本3（TWIST2 + track）[骨盆，左髋关节(滚动)，左膝，左踝关节(滚动)，右髋关节(滚动)，右膝，右踝关节(滚动)，躯干，左肩关节(滚动)，左肘，左手腕关节(滚动)，右肩关节(滚动)，右肘，右手腕关节(滚动)，左橡胶手,右橡胶手,头部动捕标记点]
+        # key_bodies = ["pelvis", "left_hip_roll_link", "left_knee_link", "left_ankle_roll_link", "right_hip_roll_link", "right_knee_link", "right_ankle_roll_link", 
+        # "torso_link", "left_shoulder_roll_link", "left_elbow_link", "left_wrist_yaw_link", "right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link"，
+        # "left_rubber_hand", "right_rubber_hand", "head_mocap"] # 17 key bodies
+        
+        # 版本2
+        key_bodies = ["pelvis", "left_hip_roll_link", "left_knee_link", "left_ankle_roll_link", "right_hip_roll_link", "right_knee_link", "right_ankle_roll_link", 
+        "torso_link", "left_shoulder_roll_link", "left_elbow_link", "left_wrist_yaw_link", "right_shoulder_roll_link", "right_elbow_link", "right_wrist_yaw_link"] # 14 key bodies
+        
         upper_key_bodies = ["left_rubber_hand", "right_rubber_hand", "left_elbow_link", "right_elbow_link", "head_mocap"]
         sample_ratio = 1.0
         motion_smooth = True
