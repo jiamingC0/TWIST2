@@ -689,11 +689,25 @@ class HumanoidMimic(HumanoidChar):
         pos_scale = 0.15
         return torch.exp(-pos_scale * dof_err)
     
+    def _reward_tracking_joint_dof2(self):
+        dof_diff = self._ref_dof_pos - self.dof_pos
+        dof_err = torch.sum(self._dof_err_w * torch.abs(dof_diff), dim=-1)
+        
+        pos_scale = 0.3
+        return torch.exp(-pos_scale * dof_err)
+    
     def _reward_tracking_joint_vel(self):
         vel_diff = self._ref_dof_vel - self.dof_vel
         vel_err = torch.sum(self._dof_err_w * vel_diff * vel_diff, dim=-1)
         
         vel_scale = 0.01
+        return torch.exp(-vel_scale * vel_err)
+    
+    def _reward_tracking_joint_vel2(self):
+        vel_diff = self._ref_dof_vel - self.dof_vel
+        vel_err = torch.sum(self._dof_err_w * torch.abs(vel_diff), dim=-1)
+        
+        vel_scale = 1.0
         return torch.exp(-vel_scale * vel_err)
     
     def _reward_tracking_root_pose(self):

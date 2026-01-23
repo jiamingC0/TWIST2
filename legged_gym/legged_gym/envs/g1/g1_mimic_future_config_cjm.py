@@ -182,11 +182,11 @@ class G1MimicStuFutureCJMCfg(G1MimicPrivCfg):
             # 0628 version  
             # tracking_joint_dof = 0.6
             
-            tracking_joint_dof = 2.0
-            # tracking_joint_dof2 = 0.3
+            # tracking_joint_dof = 2.0
+            tracking_joint_dof2 = 0.3
             
-            tracking_joint_vel = 0.2
-            # tracking_joint_vel2 = 0.1
+            # tracking_joint_vel = 0.2
+            tracking_joint_vel2 = 0.1
             # tracking_root_translation_xy = 1.0
             tracking_root_translation_z = 1.0
             tracking_root_rotation = 1.0
