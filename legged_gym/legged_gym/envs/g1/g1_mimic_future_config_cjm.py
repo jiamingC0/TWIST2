@@ -199,9 +199,10 @@ class G1MimicStuFutureCJMCfg(G1MimicPrivCfg):
             feet_slip = -0.1
             feet_contact_forces = -5e-4      
             feet_stumble = -1.25
-            dof_pos_limits = -5.0
+            dof_pos_limits = -50.0
             dof_torque_limits = -1.0
-            dof_vel = -1e-4
+            # dof_vel = -1e-4
+            dof_vel_limit = -5.0
             dof_acc = -5e-8
             action_rate = -0.05
             # action_rate = -0.01

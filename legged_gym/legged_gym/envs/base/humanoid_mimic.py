@@ -73,6 +73,14 @@ class HumanoidMimic(HumanoidChar):
         self.deviate_tracking_frames = torch.zeros((self.num_envs), device=self.device, dtype=torch.float)
         self.deviate_vel_tracking_frames = torch.zeros((self.num_envs), device=self.device, dtype=torch.float)
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
+        DOF_VEL_LIMITS = [
+            32.0, 32.0, 32.0, 20.0, 37.0, 37.0,
+            32.0, 32.0, 32.0, 20.0, 37.0, 37.0,
+            32.0, 37.0, 37.0,
+            37.0, 37.0, 37.0, 37.0, 37.0, 37.0, 37.0,
+            37.0, 37.0, 37.0, 37.0, 37.0, 37.0, 37.0
+        ]
+        self.dof_vel_limit = torch.tensor(DOF_VEL_LIMITS, device=self.device, dtype=torch.float)
     
     def _get_max_motion_len(self):
         max_len = 0
@@ -937,7 +945,12 @@ class HumanoidMimic(HumanoidChar):
     
     def _reward_dof_vel(self):
         return torch.sum(torch.square(self.dof_vel), dim=1)
-    
+
+    def _reward_dof_vel_limit(self):
+        out_of_limits = torch.clip(torch.abs(self.dof_vel) - self.dof_vel_limit, 0.0, 1.0)
+        penalty = torch.sum(out_of_limits, dim=-1)
+        return penalty
+
     def _reward_base_acc(self):
         return torch.sum(torch.square((self.last_root_vel - self.root_states[:, 7:13]) / self.dt), dim=1)
     
