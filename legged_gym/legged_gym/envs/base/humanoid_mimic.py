@@ -713,7 +713,7 @@ class HumanoidMimic(HumanoidChar):
     
     def _reward_tracking_joint_vel2(self):
         vel_diff = self._ref_dof_vel - self.dof_vel
-        vel_err = torch.sum(self._dof_err_w * torch.abs(vel_diff), dim=-1)
+        vel_err = torch.sum(self._dof_err_w * torch.abs(vel_diff), dim=-1) * self.dt
         
         vel_scale = 1.0
         return torch.exp(-vel_scale * vel_err)
