@@ -2,6 +2,6 @@ root_path: /root
 # Generated automatically from 1478 PKL files
 # Total motions: 1478
 motions:
-- file: 083327.pkl
+- file: 251215-083327.pkl
   weight: 10.0
-  description: 083327
+  description: 251215-083327
