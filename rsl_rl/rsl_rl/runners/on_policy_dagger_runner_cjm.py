@@ -222,10 +222,18 @@ class OnPolicyDaggerRunnerCJM:
         rew_explr_buffer = deque(maxlen=100)
         rew_entropy_buffer = deque(maxlen=100)
         lenbuffer = deque(maxlen=100)
+        completion_ratio_buffer = deque(maxlen=100)  # 新增：完成度比值缓冲区
+        episode_counter = 0  # 记录总episode数
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_reward_explr_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_reward_entropy_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+
+        # 新增：记录每个环境的motion_id用于计算完成度
+        cur_motion_ids = torch.zeros(self.env.num_envs, dtype=torch.long, device=self.device)
+        # 初始化：获取初始motion_ids
+        if hasattr(self.env, '_motion_ids'):
+            cur_motion_ids.copy_(self.env._motion_ids)
 
         task_rew_buf = deque(maxlen=100)
         cur_task_rew_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
@@ -270,12 +278,50 @@ class OnPolicyDaggerRunnerCJM:
                         cur_episode_length += 1
 
                         new_ids = (dones > 0).nonzero(as_tuple=False)
-                        
+
                         rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
                         rew_explr_buffer.extend(cur_reward_explr_sum[new_ids][:, 0].cpu().numpy().tolist())
                         rew_entropy_buffer.extend(cur_reward_entropy_sum[new_ids][:, 0].cpu().numpy().tolist())
                         lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
-                        
+
+                        # 新增：计算完成度比值（实际步数 / 剩余理论步数）
+                        if hasattr(self.env, '_motion_lib') and hasattr(self.env, '_motion_ids') and hasattr(self.env, '_motion_time_offsets'):
+                            for env_idx in new_ids[:, 0].cpu().numpy():
+                                episode_counter += 1
+                                motion_id = self.env._motion_ids[env_idx].item()
+                                actual_steps = cur_episode_length[env_idx].item()
+
+                                # 获取起始偏移时间（秒）
+                                start_offset_sec = self.env._motion_time_offsets[env_idx].item()
+
+                                # 获取整条轨迹长度
+                                if hasattr(self.env._motion_lib, 'get_motion_length'):
+                                    ref_length_sec = self.env._motion_lib.get_motion_length(motion_id)
+                                    # 剩余长度 = 总长度 - 起始偏移
+                                    remaining_length_sec = ref_length_sec - start_offset_sec
+
+                                    # 跳过剩余长度过短的情况（避免异常高比值）
+                                    min_remaining_sec = 1.0  # 至少保留1秒的剩余轨迹
+                                    if remaining_length_sec < min_remaining_sec:
+                                        # 不记录到缓冲区，跳过这个异常episode
+                                        continue
+
+                                    # 转换为步数
+                                    ref_steps = int(remaining_length_sec / self.env.dt)
+
+                                    # 计算比值
+                                    completion_ratio = actual_steps / ref_steps
+
+                                    # 打印异常高值的详细信息
+                                    # if completion_ratio > 2.0:
+                                    #     print(f"[WARNING] Episode {episode_counter} (env {env_idx}, motion {motion_id}): "
+                                    #           f"completion_ratio={completion_ratio:.2f} > 2.0! "
+                                    #           f"actual_steps={actual_steps}, ref_steps={ref_steps}, "
+                                    #           f"ref_length={ref_length_sec:.3f}s, start_offset={start_offset_sec:.3f}s, "
+                                    #           f"remaining={remaining_length_sec:.3f}s, dt={self.env.dt}")
+
+                                    completion_ratio_buffer.append(completion_ratio)
+
                         cur_reward_sum[new_ids] = 0
                         cur_reward_explr_sum[new_ids] = 0
                         cur_reward_entropy_sum[new_ids] = 0
@@ -300,7 +346,31 @@ class OnPolicyDaggerRunnerCJM:
             stop = time.time()
             learn_time = stop - start
             if self.log_dir is not None:
-                self.log(locals())
+                # 只传递必要的局部变量给 log 函数，避免显存泄漏
+                log_locals = {
+                    'it': it,
+                    'collection_time': collection_time,
+                    'learn_time': learn_time,
+                    'mean_value_loss': mean_value_loss,
+                    'mean_surrogate_loss': mean_surrogate_loss,
+                    'mean_priv_reg_loss': mean_priv_reg_loss,
+                    'priv_reg_coef': priv_reg_coef,
+                    'mean_grad_penalty_loss': mean_grad_penalty_loss,
+                    'grad_penalty_coef': grad_penalty_coef,
+                    'kl_teacher_student_loss': kl_teacher_student_loss,
+                    'mean_hist_latent_loss': mean_hist_latent_loss,
+                    'entropy_coef': entropy_coef,
+                    'learning_rate': self.alg.learning_rate,
+                    'regularization_scale': regularization_scale,
+                    'average_episode_length': average_episode_length,
+                    'mean_motion_difficulty': mean_motion_difficulty,
+                    'ep_infos': ep_infos,
+                    'rewbuffer': rewbuffer,
+                    'lenbuffer': lenbuffer,
+                    'completion_ratio_buffer': completion_ratio_buffer,
+                    'num_learning_iterations': num_learning_iterations,
+                }
+                self.log(log_locals)
             if it < 2500:
                 if it % self.save_interval == 0:
                     self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
@@ -311,10 +381,14 @@ class OnPolicyDaggerRunnerCJM:
                 if it % (5*self.save_interval) == 0:
                     self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
             ep_infos.clear()
+
+            # 定期清理GPU缓存（防止显存泄漏）
+            if it % 10 == 0 and self.device.startswith('cuda'):
+                torch.cuda.empty_cache()
         
         # self.current_learning_iteration += num_learning_iterations
         self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
-    
+
     def _need_normalizer_update(self, iterations, update_iterations):
         return iterations < update_iterations
 
@@ -374,6 +448,9 @@ class OnPolicyDaggerRunnerCJM:
         if len(locs['rewbuffer']) > 0:
             wandb_dict['Train/mean_reward'] = statistics.mean(locs['rewbuffer'])
             wandb_dict['Train/mean_episode_length'] = statistics.mean(locs['lenbuffer'])
+            # 新增：记录完成度比值（实际步数 / 理论步数）
+            if len(locs['completion_ratio_buffer']) > 0:
+                wandb_dict['Train/mean_completion_ratio'] = statistics.mean(locs['completion_ratio_buffer'])
             # wandb_dict['Train/mean_reward/time', statistics.mean(locs['rewbuffer']), self.tot_time)
             # wandb_dict['Train/mean_episode_length/time', statistics.mean(locs['lenbuffer']), self.tot_time)
 
@@ -396,6 +473,9 @@ class OnPolicyDaggerRunnerCJM:
                           f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
                           f"""{'Mean reward (total):':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
                           f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n""")
+            # 新增：打印完成度比值
+            if 'completion_ratio_buffer' in locs and len(locs['completion_ratio_buffer']) > 0:
+                log_string += f"""{'Mean completion ratio:':>{pad}} {statistics.mean(locs['completion_ratio_buffer']):.3f}\n"""
                         #   f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""
                         #   f"""{'Mean episode length/episode:':>{pad}} {locs['mean_trajectory_length']:.2f}\n""")
         else:
