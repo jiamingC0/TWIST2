@@ -201,16 +201,23 @@ def play(args):
             error_tracking_root_ang_vel.append(env._error_tracking_root_ang_vel().item())
             error_tracking_keybody_pos_single, error_tracking_keybody_pos_diff = env._error_tracking_keybody_pos()
             
-            # key_bodies = ["left_rubber_hand", "right_rubber_hand", "left_ankle_roll_link", "right_ankle_roll_link", "left_knee_link", "right_knee_link", "left_elbow_link", "right_elbow_link", "head_mocap"] # 9 key bodies
-            keybody_hand_err = (error_tracking_keybody_pos_diff[0,0]+error_tracking_keybody_pos_diff[0,1])/2
+            # key_bodies = ["pelvis", "left_hip_roll_link", "left_knee_link", "left_ankle_roll_link",
+            #              "right_hip_roll_link", "right_knee_link", "right_ankle_roll_link",
+            #              "torso_link", "left_shoulder_roll_link", "left_elbow_link",
+            #              "left_wrist_yaw_link", "right_shoulder_roll_link", "right_elbow_link",
+            #              "right_wrist_yaw_link"] # 14 key bodies
+            # 索引映射: 0:pelvis, 1:left_hip, 2:left_knee, 3:left_ankle, 4:right_hip, 5:right_knee, 6:right_ankle,
+            # 7:torso, 8:left_shoulder, 9:left_elbow, 10:left_wrist, 11:right_shoulder, 12:right_elbow, 13:right_wrist
+            # 注意: 新的key bodies列表不包含hands/feet/heads，需要根据实际需求选择索引
+            keybody_hand_err = (error_tracking_keybody_pos_diff[0,9]+error_tracking_keybody_pos_diff[0,12])/2  # left_elbow, right_elbow作为手部代理
             error_tracking_keybody_pos_hand.append(keybody_hand_err.item())
-            keybody_feet_err = (error_tracking_keybody_pos_diff[0,2]+error_tracking_keybody_pos_diff[0,3])/2
+            keybody_feet_err = (error_tracking_keybody_pos_diff[0,3]+error_tracking_keybody_pos_diff[0,6])/2  # left_ankle, right_ankle
             error_tracking_keybody_pos_feet.append(keybody_feet_err.item())
-            keybody_knee_err = (error_tracking_keybody_pos_diff[0,4]+error_tracking_keybody_pos_diff[0,5])/2
+            keybody_knee_err = (error_tracking_keybody_pos_diff[0,2]+error_tracking_keybody_pos_diff[0,5])/2  # left_knee, right_knee
             error_tracking_keybody_pos_knee.append(keybody_knee_err.item())
-            keybody_elbow_err = (error_tracking_keybody_pos_diff[0,6]+error_tracking_keybody_pos_diff[0,7])/2
+            keybody_elbow_err = (error_tracking_keybody_pos_diff[0,9]+error_tracking_keybody_pos_diff[0,12])/2  # left_elbow, right_elbow
             error_tracking_keybody_pos_elbow.append(keybody_elbow_err.item())
-            keybody_head_err = error_tracking_keybody_pos_diff[0,8]
+            keybody_head_err = error_tracking_keybody_pos_diff[0,7]  # torso作为头部代理
             error_tracking_keybody_pos_head.append(keybody_head_err.item())
             
             error_tracking_keybody_pos.append(error_tracking_keybody_pos_single.item())

@@ -31,9 +31,6 @@ class G1MimicStuFutureCJMCfg(G1MimicPrivCfg):
     """Student policy config with future motion support and curriculum masking.
     Extends existing G1MimicPrivCfg to add future motion capabilities."""
 
-    # Use global key_bodies_list and NUM_KEY_BODIES
-    pass
-
     class env:
         obs_type = 'student_future'
 
