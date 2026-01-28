@@ -306,15 +306,21 @@ class OnPolicyDaggerRunnerCJM:
 
             stop = time.time()
             learn_time = stop - start
-            if self.log_dir is not None:
-                self.log(locals())
+
+            # Check if evaluation is needed
             if it % self.eval_interval == 0 and it > 0:
                 eval_metrics = self.evaluate_policy(it)
-                # Update locals with eval_metrics for logging
-                locs['eval_metrics'] = eval_metrics
-                self.log(locals)
             else:
-                locs['eval_metrics'] = None
+                eval_metrics = None
+
+            if self.log_dir is not None:
+                # Create locals dict and add eval_metrics if available
+                log_locals = locals()
+                if eval_metrics is not None:
+                    log_locals['eval_metrics'] = eval_metrics
+                else:
+                    log_locals['eval_metrics'] = None
+                self.log(log_locals)
             if it < 2500:
                 if it % self.save_interval == 0:
                     self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
