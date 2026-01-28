@@ -100,6 +100,7 @@ class DaggerPPOCJM:
 
         # PPO parameters
         self.clip_param = clip_param
+        self.ori_clip_param = clip_param
         self.num_learning_epochs = num_learning_epochs
         self.num_mini_batches = num_mini_batches
         self.value_loss_coef = value_loss_coef
@@ -165,6 +166,13 @@ class DaggerPPOCJM:
     def compute_returns(self, last_critic_obs):
         last_values= self.actor_critic.evaluate(last_critic_obs).detach()
         self.storage.compute_returns(last_values, self.gamma, self.lam)
+        
+    def update_param(self, current_iteration, total_iterations):
+        if current_iteration > 0.6 * total_iterations:
+            self.clip_param = self.ori_clip_param * 0.25
+        else:
+            self.clip_param = self.ori_clip_param
+ 
     
     def update(self):
         mean_value_loss = 0

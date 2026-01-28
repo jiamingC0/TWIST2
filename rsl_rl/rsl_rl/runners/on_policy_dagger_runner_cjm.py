@@ -295,6 +295,8 @@ class OnPolicyDaggerRunnerCJM:
             regularization_scale = self.env.cfg.rewards.regularization_scale if hasattr(self.env.cfg.rewards, "regularization_scale") else 1
             average_episode_length = torch.mean(self.env.episode_length.float()).item() if hasattr(self.env, "episode_length") else 0
             mean_motion_difficulty = self.env.mean_motion_difficulty if hasattr(self.env, "mean_motion_difficulty") else 0
+            
+            self.alg.update_param(it, tot_iter)
             mean_value_loss, mean_surrogate_loss, mean_priv_reg_loss, priv_reg_coef, mean_grad_penalty_loss, grad_penalty_coef, kl_teacher_student_loss = self.alg.update()
     
             stop = time.time()
