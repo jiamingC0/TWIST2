@@ -166,6 +166,11 @@ class OnPolicyDaggerRunnerCJM:
         self.save_interval = self.cfg["save_interval"]
         self.dagger_update_freq = self.alg_cfg["dagger_update_freq"]
 
+        # Evaluation settings
+        self.eval_interval = self.cfg.get("eval_interval", 200)
+        self.eval_num_episodes = self.cfg.get("eval_num_episodes", 10)
+        self.eval_save_metrics = self.cfg.get("eval_save_metrics", True)
+
         if "Transformer" in self.cfg["policy_class_name"]:
             self.alg.init_storage(
                 self.env.num_envs,
@@ -298,11 +303,18 @@ class OnPolicyDaggerRunnerCJM:
             
             self.alg.update_param(it, tot_iter)
             mean_value_loss, mean_surrogate_loss, mean_priv_reg_loss, priv_reg_coef, mean_grad_penalty_loss, grad_penalty_coef, kl_teacher_student_loss = self.alg.update()
-    
+
             stop = time.time()
             learn_time = stop - start
             if self.log_dir is not None:
                 self.log(locals())
+            if it % self.eval_interval == 0 and it > 0:
+                eval_metrics = self.evaluate_policy(it)
+                # Update locals with eval_metrics for logging
+                locs['eval_metrics'] = eval_metrics
+                self.log(locals)
+            else:
+                locs['eval_metrics'] = None
             if it < 2500:
                 if it % self.save_interval == 0:
                     self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
@@ -376,6 +388,15 @@ class OnPolicyDaggerRunnerCJM:
         if len(locs['rewbuffer']) > 0:
             wandb_dict['Train/mean_reward'] = statistics.mean(locs['rewbuffer'])
             wandb_dict['Train/mean_episode_length'] = statistics.mean(locs['lenbuffer'])
+
+        # Add evaluation metrics if available
+        if 'eval_metrics' in locs and locs['eval_metrics'] is not None:
+            eval_m = locs['eval_metrics']
+            wandb_dict['Eval/tracking_error_mean'] = eval_m['mean_tracking_error']
+            wandb_dict['Eval/tracking_error_std'] = eval_m['std_tracking_error']
+            wandb_dict['Eval/success_rate'] = eval_m['success_rate']
+            wandb_dict['Eval/fall_rate'] = eval_m['fall_rate']
+            wandb_dict['Eval/entropy_mean'] = eval_m['mean_entropy']
             # wandb_dict['Train/mean_reward/time', statistics.mean(locs['rewbuffer']), self.tot_time)
             # wandb_dict['Train/mean_episode_length/time', statistics.mean(locs['lenbuffer']), self.tot_time)
 
@@ -492,6 +513,137 @@ class OnPolicyDaggerRunnerCJM:
         print("Loading teacher policy from {}...".format(path))
         loaded_dict = torch.load(path, map_location=self.device)
         self.teacher_actor_critic.load_state_dict(loaded_dict['model_state_dict'])
+        if self.normalize_obs:
+            self.teacher_normalizer = loaded_dict['normalizer']
+        print("*" * 80)
+
+    def evaluate_policy(self, it):
+        """Evaluate current policy in deterministic mode without exploration."""
+        from termcolor import cprint
+        import numpy as np
+
+        # Switch to eval mode (no dropout, deterministic actions)
+        self.alg.actor_critic.test()
+
+        # Temporarily disable noise if enabled
+        original_add_noise = self.env.cfg.noise.add_noise
+        self.env.cfg.noise.add_noise = False
+
+        # Create eval metrics storage
+        eval_metrics = {
+            'iteration': it,
+            'tracking_errors': [],
+            'fall_rates': 0,
+            'success_rates': 0,
+            'policy_entropy': [],
+            'episode_lengths': []
+        }
+
+        num_eval_envs = min(self.env.num_envs, 100)  # Use up to 100 envs for eval
+
+        # Reset environments
+        eval_obs = self.env.reset()
+        if self.env.privileged_obs_buf is not None:
+            eval_priv_obs = self.env.get_privileged_observations()
+        else:
+            eval_priv_obs = eval_obs
+
+        eval_obs, eval_priv_obs = eval_obs.to(self.device), eval_priv_obs.to(self.device)
+
+        if self.normalize_obs:
+            eval_obs = self.normalizer.normalize(eval_obs)
+            eval_priv_obs = self.teacher_normalizer.normalize(eval_priv_obs)
+
+        completed_episodes = 0
+        episode_tracking_errors = []
+        episode_entropies = []
+        episode_falls = 0
+
+        current_episode_tracking_errors = torch.zeros(num_eval_envs, device=self.device)
+        current_episode_steps = torch.zeros(num_eval_envs, device=self.device)
+
+        with torch.inference_mode():
+            while completed_episodes < self.eval_num_episodes:
+                # Get actions without exploration (deterministic)
+                actions = self.alg.actor_critic.act_inference(eval_obs)
+
+                # Get entropy from distribution (before deterministic action)
+                self.alg.actor_critic.update_distribution(eval_obs)
+                entropy = self.alg.actor_critic.entropy.mean().item()
+                episode_entropies.append(entropy)
+
+                # Step environment
+                next_obs, next_priv_obs, rewards, dones, infos = self.env.step(actions)
+
+                eval_priv_obs = next_priv_obs if next_priv_obs is not None else next_obs
+                next_obs, eval_priv_obs = next_obs.to(self.device), eval_priv_obs.to(self.device)
+
+                if self.normalize_obs:
+                    next_obs = self.normalizer.normalize(next_obs)
+                    eval_priv_obs = self.teacher_normalizer.normalize(eval_priv_obs)
+
+                # Compute tracking error for all environments
+                joint_dof_error = self.env._error_tracking_joint_dof().mean().item()
+
+                # Accumulate metrics
+                for env_id in range(num_eval_envs):
+                    current_episode_tracking_errors[env_id] += joint_dof_error
+                    current_episode_steps[env_id] += 1
+
+                # Check for completed episodes
+                for env_id in range(num_eval_envs):
+                    if dones[env_id] and current_episode_steps[env_id] > 0:
+                        # Normalize tracking error by steps
+                        avg_tracking_error = (current_episode_tracking_errors[env_id] / current_episode_steps[env_id]).item()
+
+                        # Check if episode ended due to fall (not timeout)
+                        if 'time_outs' in infos and infos['time_outs'][env_id]:
+                            # Timeout - count as success
+                            episode_falls += 0
+                        else:
+                            # Fell or terminated early - count as fall
+                            episode_falls += 1
+
+                        episode_tracking_errors.append(avg_tracking_error)
+
+                        current_episode_tracking_errors[env_id] = 0
+                        current_episode_steps[env_id] = 0
+                        completed_episodes += 1
+
+                        if completed_episodes >= self.eval_num_episodes:
+                            break
+
+                eval_obs = next_obs
+
+                if completed_episodes >= self.eval_num_episodes:
+                    break
+
+        # Compute aggregate metrics
+        eval_metrics['tracking_errors'] = episode_tracking_errors
+        eval_metrics['policy_entropy'] = episode_entropies
+        eval_metrics['fall_rate'] = episode_falls / self.eval_num_episodes
+        eval_metrics['success_rate'] = 1.0 - eval_metrics['fall_rate']
+        eval_metrics['mean_tracking_error'] = np.mean(episode_tracking_errors)
+        eval_metrics['std_tracking_error'] = np.std(episode_tracking_errors)
+        eval_metrics['mean_entropy'] = np.mean(episode_entropies)
+
+        # Restore original noise setting
+        self.env.cfg.noise.add_noise = original_add_noise
+
+        # Print evaluation results
+        cprint(f"\n{'='*60}", "cyan")
+        cprint(f"Evaluation at iteration {it}", "cyan")
+        cprint(f"{'='*60}", "cyan")
+        cprint(f"Mean Tracking Error: {eval_metrics['mean_tracking_error']:.4f} ± {eval_metrics['std_tracking_error']:.4f}", "green")
+        cprint(f"Success Rate: {eval_metrics['success_rate']*100:.1f}%", "green")
+        cprint(f"Fall Rate: {eval_metrics['fall_rate']*100:.1f}%", "red" if eval_metrics['fall_rate'] > 0.5 else "green")
+        cprint(f"Mean Policy Entropy: {eval_metrics['mean_entropy']:.4f}", "yellow")
+        cprint(f"{'='*60}\n", "cyan")
+
+        # Switch back to train mode
+        self.alg.actor_critic.train()
+
+        return eval_metrics
         if self.normalize_obs:
             self.teacher_normalizer = loaded_dict['normalizer']
         print("*" * 80)
