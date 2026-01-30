@@ -307,6 +307,11 @@ class G1MimicStuFutureCJMCfgDAgger(G1MimicStuFutureCJMCfg):
         priv_reg_coef_schedual_resume = [0, 0.1, 0, 1]
         normalizer_update_iterations = 3000
 
+        # E3: PPO KL early-stop - 验证"是不是 PPO 自己炸的"
+        kl_early_stop_enabled = True       # 是否启用 KL early-stop
+        kl_early_stop_threshold = 2.5      # KL 超过 desired_kl 的倍数时停止 update
+        kl_early_stop_log_freq = 100      # 多少次 early-stop 打印一次日志
+
     class policy:
         action_std = [0.7] * 12 + [0.4] * 3 + [0.5] * 14
         init_noise_std = 1.0

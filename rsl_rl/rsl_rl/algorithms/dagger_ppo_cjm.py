@@ -122,6 +122,11 @@ class DaggerPPOCJM:
         # Action std
         self.fix_std = self.actor_critic.if_fix_std()
         self.std_schedule = std_schedule
+
+        # E3: PPO KL early-stop - 验证"是不是 PPO 自己炸的"
+        self.kl_early_stop_enabled = self.alg_cfg["kl_early_stop_enabled"]
+        self.kl_early_stop_threshold = self.alg_cfg["kl_early_stop_threshold"]
+        self.kl_early_stop_log_freq = self.alg_cfg["kl_early_stop_log_freq"]
         print("*************DaggerPPOCJM init finish*************")
     
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
@@ -171,6 +176,7 @@ class DaggerPPOCJM:
         mean_surrogate_loss = 0
         mean_priv_reg_loss = 0
         kl_teacher_student_loss = 0.0
+        mean_kl = 0.0
 
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
@@ -187,14 +193,26 @@ class DaggerPPOCJM:
                 mu_batch = self.actor_critic.action_mean
                 sigma_batch = self.actor_critic.action_std
                 entropy_batch = self.actor_critic.entropy
-                
+
                 # KL
+                kl_mean = 0.0
                 if self.desired_kl != None and self.schedule == 'adaptive':
                     with torch.inference_mode():
                         kl = torch.sum(
                             torch.log(sigma_batch / old_sigma_batch + 1.e-5) + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch)) / (2.0 * torch.square(sigma_batch)) - 0.5, axis=-1)
                         kl_mean = torch.mean(kl)
 
+                        # E3: PPO KL early-stop - 验证"是不是 PPO 自己炸的"
+                        if self.kl_early_stop_enabled:
+                            kl_threshold = self.desired_kl * self.kl_early_stop_threshold
+                            if self.counter % cfg_algorithm.kl_early_stop_log_freq == 0:
+                                cprint(f"[E3] KL: {kl_mean:.4f}, threshold: {kl_threshold:.4f}", "cyan")
+                            if kl_mean > kl_threshold:
+                                # KL 过大，停止这次 update（紧急刹车）
+                                cprint(f"[E3] KL early-stop: kl={kl_mean:.4f} > threshold={kl_threshold:.4f}, breaking update", "red")
+                                break  # 跳出当前 mini-batch 的更新循环
+
+                        # 原有的 adaptive LR 调整（保留）
                         if kl_mean > self.desired_kl * 2.0:
                             self.learning_rate = max(1e-5, self.learning_rate / 1.5)
                         elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
@@ -202,6 +220,9 @@ class DaggerPPOCJM:
                         
                         for param_group in self.optimizer.param_groups:
                             param_group['lr'] = self.learning_rate
+
+                # E3: 累加 KL 用于统计
+                mean_kl += kl_mean
 
 
                 # Surrogate loss
@@ -266,10 +287,10 @@ class DaggerPPOCJM:
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_priv_reg_loss /= num_updates
-        
+        mean_kl /= num_updates
+
         self.counter += 1
         self.storage.clear()
-        # self.update_counter()
 
         # Update dagger_coef based on the current iteration
         current_iteration = self.counter  # Assuming counter is incremented each update
@@ -278,8 +299,8 @@ class DaggerPPOCJM:
         else:
             self.dagger_coef = self.dagger_coef_min
         # cprint(f"counter: {self.counter}, dagger_coef: {self.dagger_coef}", "green")
-        
-        return mean_value_loss, mean_surrogate_loss, mean_priv_reg_loss, 0, 0, 0, kl_teacher_student_loss
+
+        return mean_value_loss, mean_surrogate_loss, mean_priv_reg_loss, 0, 0, 0, kl_teacher_student_loss, mean_kl
 
 
     
