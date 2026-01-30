@@ -295,6 +295,12 @@ class OnPolicyDaggerRunnerCJM:
             regularization_scale = self.env.cfg.rewards.regularization_scale if hasattr(self.env.cfg.rewards, "regularization_scale") else 1
             average_episode_length = torch.mean(self.env.episode_length.float()).item() if hasattr(self.env, "episode_length") else 0
             mean_motion_difficulty = self.env.mean_motion_difficulty if hasattr(self.env, "mean_motion_difficulty") else 0
+
+            # Get force curriculum statistics if enabled
+            force_curriculum_stats = {}
+            if hasattr(self.env, '_get_force_curriculum_info'):
+                force_curriculum_stats = self.env._get_force_curriculum_info()
+
             mean_value_loss, mean_surrogate_loss, mean_priv_reg_loss, priv_reg_coef, mean_grad_penalty_loss, grad_penalty_coef, kl_teacher_student_loss = self.alg.update()
     
             stop = time.time()
@@ -366,6 +372,19 @@ class OnPolicyDaggerRunnerCJM:
         
         if locs['mean_motion_difficulty'] != 0:
             wandb_dict['Scale/motion_difficulty'] = locs["mean_motion_difficulty"]
+
+        # Log force curriculum statistics if enabled
+        if 'force_curriculum_stats' in locs and locs['force_curriculum_stats']:
+            stats = locs['force_curriculum_stats']
+            if stats.get('force_curriculum_enabled', False):
+                wandb_dict['ForceCurriculum/enabled'] = stats['force_curriculum_enabled']
+                wandb_dict['ForceCurriculum/scale_mean'] = stats['force_scale_mean']
+                wandb_dict['ForceCurriculum/scale_std'] = stats['force_scale_std']
+                wandb_dict['ForceCurriculum/scale_min'] = stats['force_scale_min_val']
+                wandb_dict['ForceCurriculum/scale_max'] = stats['force_scale_max_val']
+                wandb_dict['ForceCurriculum/left_force_magnitude_mean'] = stats['left_force_magnitude_mean']
+                wandb_dict['ForceCurriculum/right_force_magnitude_mean'] = stats['right_force_magnitude_mean']
+                wandb_dict['ForceCurriculum/total_force_magnitude_mean'] = stats['total_force_magnitude_mean']
 
         wandb_dict['Policy/mean_noise_std'] = mean_std.item()
         wandb_dict['Perf/total_fps'] = fps

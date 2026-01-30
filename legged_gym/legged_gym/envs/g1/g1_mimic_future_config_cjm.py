@@ -59,8 +59,8 @@ class G1MimicStuFutureCJMCfg(G1MimicPrivCfg):
         num_privileged_obs = n_priv_obs_single
         
         # FALCON-style curriculum force application (domain randomization)
-        # enable_force_curriculum = True  # Enable force disturbances during training
-        enable_force_curriculum = False  # Enable force disturbances during training
+        enable_force_curriculum = True  # Enable force disturbances during training
+        # enable_force_curriculum = False  # Enable force disturbances during training
 
         #from G1MimicPrivCfg.env
         env_spacing = 3.  # not used with heightfields/trimeshes 
@@ -101,13 +101,13 @@ class G1MimicStuFutureCJMCfg(G1MimicPrivCfg):
             
             # Force curriculum learning
             force_scale_curriculum = True
-            force_scale_initial_scale = 1.0
-            force_scale_up_threshold = 210    # Episode length threshold for scaling up force
-            force_scale_down_threshold = 200  # Episode length threshold for scaling down force
-            force_scale_up = 0.02            # Amount to increase force scale
-            force_scale_down = 0.02          # Amount to decrease force scale
-            force_scale_max = 1.0
-            force_scale_min = 0.0
+            force_scale_initial_scale = 0.0     # 从0开始，让机器人先学会基本动作
+            force_scale_up_threshold = 210       # Episode length > 210时增大力度
+            force_scale_down_threshold = 200     # Episode length < 200时减小力度
+            force_scale_up = 0.02                # 每次增加0.02
+            force_scale_down = 0.02              # 每次减少0.02
+            force_scale_max = 1.0               # 最大力度
+            force_scale_min = 0.0               # 最小力度（可为0）
             
             # Force application ranges (in Newtons)
             apply_force_x_range = [-40.0, 40.0]

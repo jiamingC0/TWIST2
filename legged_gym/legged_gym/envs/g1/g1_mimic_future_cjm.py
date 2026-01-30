@@ -409,27 +409,43 @@ class G1MimicFutureCJM(G1MimicDistill):
         """Get force curriculum information for logging."""
         if not self.enable_force_curriculum:
             return {}
-            
+
+        # Applied force magnitudes (from applied_forces tensor)
+        # applied_forces shape: (num_envs, num_bodies, 3)
+        num_bodies = len(self.force_apply_body_indices)
+        if num_bodies >= 2:
+            left_force_mag = torch.norm(self.applied_forces[:, 0, :], dim=1).mean().item()
+            right_force_mag = torch.norm(self.applied_forces[:, 1, :], dim=1).mean().item()
+            total_force_mag = torch.norm(self.applied_forces, dim=2).sum(dim=1).mean().item()
+        elif num_bodies == 1:
+            left_force_mag = torch.norm(self.applied_forces[:, 0, :], dim=1).mean().item()
+            right_force_mag = 0.0
+            total_force_mag = torch.norm(self.applied_forces[:, 0, :], dim=1).mean().item()
+        else:
+            left_force_mag = 0.0
+            right_force_mag = 0.0
+            total_force_mag = 0.0
+
         info = {
             # Force curriculum parameters
             'force_curriculum_enabled': self.enable_force_curriculum,
             'force_scale_curriculum_enabled': self.force_scale_curriculum,
-            
-            # Current force scale statistics
-            'force_scale_mean': self.apply_force_scale.mean().item(),
-            'force_scale_std': self.apply_force_scale.std().item(),
-            'force_scale_min_val': self.apply_force_scale.min().item(),
-            'force_scale_max_val': self.apply_force_scale.max().item(),
-            
+
+            # Current force scale statistics (per-env)
+            'force_scale_mean': self.force_scale.mean().item(),
+            'force_scale_std': self.force_scale.std().item(),
+            'force_scale_min_val': self.force_scale.min().item(),
+            'force_scale_max_val': self.force_scale.max().item(),
+
             # Applied force magnitudes
-            'left_force_magnitude_mean': torch.norm(self.left_ee_apply_force, dim=1).mean().item(),
-            'right_force_magnitude_mean': torch.norm(self.right_ee_apply_force, dim=1).mean().item(),
-            'total_force_magnitude_mean': (torch.norm(self.left_ee_apply_force, dim=1) + torch.norm(self.right_ee_apply_force, dim=1)).mean().item(),
-            
+            'left_force_magnitude_mean': left_force_mag,
+            'right_force_magnitude_mean': right_force_mag,
+            'total_force_magnitude_mean': total_force_mag,
+
             # Force curriculum thresholds
             'force_scale_up_threshold': self.force_scale_up_threshold,
             'force_scale_down_threshold': self.force_scale_down_threshold,
-            
+
             # Force ranges
             'force_x_range_low': self.apply_force_x_range[0].item(),
             'force_x_range_high': self.apply_force_x_range[1].item(),
@@ -438,7 +454,7 @@ class G1MimicFutureCJM(G1MimicDistill):
             'force_z_range_low': self.apply_force_z_range[0].item(),
             'force_z_range_high': self.apply_force_z_range[1].item(),
         }
-        
+
         return info
     
     def reset_idx(self, env_ids):
