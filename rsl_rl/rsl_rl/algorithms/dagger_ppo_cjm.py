@@ -206,7 +206,7 @@ class DaggerPPOCJM:
                         # E3: PPO KL early-stop - 验证"是不是 PPO 自己炸的"
                         if self.kl_early_stop_enabled:
                             kl_threshold = self.desired_kl * self.kl_early_stop_threshold
-                            if self.counter % cfg_algorithm.kl_early_stop_log_freq == 0:
+                            if self.counter % self.kl_early_stop_log_freq == 0:
                                 cprint(f"[E3] KL: {kl_mean:.4f}, threshold: {kl_threshold:.4f}", "cyan")
                             if kl_mean > kl_threshold:
                                 # KL 过大，停止这次 update（紧急刹车）
