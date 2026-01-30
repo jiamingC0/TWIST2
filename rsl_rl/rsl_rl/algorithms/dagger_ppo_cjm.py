@@ -104,6 +104,7 @@ class DaggerPPOCJM:
         self.num_mini_batches = num_mini_batches
         self.value_loss_coef = value_loss_coef
         self.entropy_coef = entropy_coef
+        self.ori_entropy_coef = entropy_coef
         
         self.dagger_coef = dagger_coef
         self.dagger_coef_anneal_steps = dagger_coef_anneal_steps
@@ -166,12 +167,13 @@ class DaggerPPOCJM:
         last_values= self.actor_critic.evaluate(last_critic_obs).detach()
         self.storage.compute_returns(last_values, self.gamma, self.lam)
     
-    def update(self):
+    def update(self, entropy_coef = self.ori_entropy_coef):
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_priv_reg_loss = 0
         kl_teacher_student_loss = 0.0
         mean_entropy = 0.0  # E1: 记录 entropy 用于监控
+        self.entropy_coef = entropy_coef
 
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
@@ -275,22 +277,6 @@ class DaggerPPOCJM:
         self.counter += 1
         self.storage.clear()
         # self.update_counter()
-
-        # E1: Entropy 退火 - 在 locomotion 学会后减少 entropy
-        if hasattr(self.env.cfg.algorithm, 'entropy_anneal_enabled') and self.env.cfg.algorithm.entropy_anneal_enabled:
-            anneal_ratio = self.env.cfg.algorithm.entropy_anneal_ratio
-            entropy_coef_final = self.env.cfg.algorithm.entropy_coef_final
-            max_iterations = self.env.cfg.runner.max_iterations
-
-            if self.counter >= max_iterations * anneal_ratio:
-                self.entropy_coef = entropy_coef_final
-                if self.counter == int(max_iterations * anneal_ratio):
-                    cprint(f"[E1] Entropy annealing: entropy_coef = {entropy_coef_final} at iteration {self.counter}", "yellow")
-            else:
-                # 线性退火（可选）
-                # progress = min(self.counter / (max_iterations * anneal_ratio), 1.0)
-                # self.entropy_coef = self.env.cfg.algorithm.entropy_coef * (1 - progress) + entropy_coef_final * progress
-                pass
 
         # Update dagger_coef based on the current iteration
         current_iteration = self.counter  # Assuming counter is incremented each update

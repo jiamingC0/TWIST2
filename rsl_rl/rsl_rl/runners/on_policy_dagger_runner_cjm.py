@@ -162,6 +162,7 @@ class OnPolicyDaggerRunnerCJM:
                                   self.teacher_actor_critic,
                                   teacher_loaded=self.teacher_loaded,
                                   device=self.device, **self.alg_cfg)
+        
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
         self.dagger_update_freq = self.alg_cfg["dagger_update_freq"]
@@ -295,7 +296,9 @@ class OnPolicyDaggerRunnerCJM:
             regularization_scale = self.env.cfg.rewards.regularization_scale if hasattr(self.env.cfg.rewards, "regularization_scale") else 1
             average_episode_length = torch.mean(self.env.episode_length.float()).item() if hasattr(self.env, "episode_length") else 0
             mean_motion_difficulty = self.env.mean_motion_difficulty if hasattr(self.env, "mean_motion_difficulty") else 0
-            mean_value_loss, mean_surrogate_loss, mean_priv_reg_loss, priv_reg_coef, mean_grad_penalty_loss, grad_penalty_coef, kl_teacher_student_loss, mean_entropy = self.alg.update()
+            # E1: Entropy 退火 - 在 locomotion 学会后减少 entropy
+            entropy_coef = self.get_cur_entropy(it, tot_iter)
+            mean_value_loss, mean_surrogate_loss, mean_priv_reg_loss, priv_reg_coef, mean_grad_penalty_loss, grad_penalty_coef, kl_teacher_student_loss, mean_entropy = self.alg.update(entropy_coef)
     
             stop = time.time()
             learn_time = stop - start
@@ -315,6 +318,20 @@ class OnPolicyDaggerRunnerCJM:
         # self.current_learning_iteration += num_learning_iterations
         self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
     
+    def get_cur_entropy(self, it, tot_iter):
+        anneal_ratio = self.alg_cfg.entropy_anneal_ratio
+        entropy_coef_final = self.alg_cfg.entropy_coef_final
+        entropy_coef = self.alg_cfg.entropy_coef
+        
+        if it >= tot_iter * anneal_ratio:
+            entropy_coef = entropy_coef_final
+            if self.counter == int(max_iterations * anneal_ratio):
+                cprint(f"[E1] Entropy annealing: entropy_coef = {entropy_coef_final} at iteration {self.counter}", "yellow")
+        else:
+            # 线性退火（可选）
+            # progress = min(self.counter / (max_iterations * anneal_ratio), 1.0)
+            # self.entropy_coef = cfg_algorithm.entropy_coef * (1 - progress) + entropy_coef_final * progress
+        return entropy_coef
     def _need_normalizer_update(self, iterations, update_iterations):
         return iterations < update_iterations
 
