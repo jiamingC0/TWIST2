@@ -167,13 +167,14 @@ class DaggerPPOCJM:
         last_values= self.actor_critic.evaluate(last_critic_obs).detach()
         self.storage.compute_returns(last_values, self.gamma, self.lam)
     
-    def update(self, entropy_coef = self.ori_entropy_coef):
+    def update(self, entropy_coef = None):
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_priv_reg_loss = 0
         kl_teacher_student_loss = 0.0
         mean_entropy = 0.0  # E1: 记录 entropy 用于监控
-        self.entropy_coef = entropy_coef
+        # 使用传入的entropy_coef，如果未传入则使用self.ori_entropy_coef
+        self.entropy_coef = entropy_coef if entropy_coef is not None else self.ori_entropy_coef
 
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
