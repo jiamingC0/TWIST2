@@ -56,10 +56,10 @@ def load_onnx_policy(policy_path: str, device: str) -> OnnxPolicyWrapper:
 
 
 class RealTimePolicyController:
-    def __init__(self, 
-                 xml_file, 
-                 policy_path, 
-                 device='cuda', 
+    def __init__(self,
+                 xml_file,
+                 policy_path,
+                 device='cuda',
                  record_video=False,
                  record_proprio=False,
                  measure_fps=False,
@@ -197,8 +197,9 @@ class RealTimePolicyController:
         dof_vel = self.data.qvel[6:6+n_dof]
         quat = self.data.qpos[3:7]
         ang_vel = self.data.qvel[3:6]
+        root_pos = self.data.qpos[0:3]  # root position [x, y, z]
         sim_torque = self.data.ctrl
-        return dof_pos, dof_vel, quat, ang_vel, sim_torque
+        return dof_pos, dof_vel, quat, ang_vel, sim_torque, root_pos
 
     def run(self):
         """Main simulation loop"""
@@ -238,8 +239,8 @@ class RealTimePolicyController:
         try:
             for i in pbar:
                 t_start = time.time()
-                dof_pos, dof_vel, quat, ang_vel, sim_torque = self.extract_data()
-                
+                dof_pos, dof_vel, quat, ang_vel, sim_torque, root_pos = self.extract_data()
+
                 if i % self.sim_decimation == 0:
                     # Build proprioceptive observation
                     rpy = quatToEuler(quat)
@@ -259,11 +260,12 @@ class RealTimePolicyController:
                         dof_pos]) # 3+2+29 = 34 dims
 
                     # Send proprio to redis
-                    
+
                     self.redis_pipeline.set("state_body_unitree_g1_with_hands", json.dumps(state_body.tolist()))
                     self.redis_pipeline.set("state_hand_left_unitree_g1_with_hands", json.dumps(np.zeros(7).tolist()))
                     self.redis_pipeline.set("state_hand_right_unitree_g1_with_hands", json.dumps(np.zeros(7).tolist()))
                     self.redis_pipeline.set("state_neck_unitree_g1_with_hands", json.dumps(np.zeros(2).tolist()))
+                    self.redis_pipeline.set("root_pos_unitree_g1_with_hands", json.dumps(root_pos.tolist()))  # Add root position
                     self.redis_pipeline.set("t_state", int(time.time() * 1000)) # current timestamp in ms
                     self.redis_pipeline.execute()
 
