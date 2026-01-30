@@ -124,9 +124,10 @@ class DaggerPPOCJM:
         self.std_schedule = std_schedule
 
         # E3: PPO KL early-stop - 验证"是不是 PPO 自己炸的"
-        self.kl_early_stop_enabled = self.alg_cfg["kl_early_stop_enabled"]
-        self.kl_early_stop_threshold = self.alg_cfg["kl_early_stop_threshold"]
-        self.kl_early_stop_log_freq = self.alg_cfg["kl_early_stop_log_freq"]
+        self.kl_early_stop_enabled = kwargs.get('kl_early_stop_enabled')
+        self.kl_early_stop_threshold = kwargs.get('kl_early_stop_threshold')
+        self.kl_early_stop_log_freq = kwargs.get('kl_early_stop_log_freq')
+        # print(f"KL Early Stop: enabled={self.kl_early_stop_enabled}, threshold={self.kl_early_stop_threshold}, log_freq={self.kl_early_stop_log_freq}")
         print("*************DaggerPPOCJM init finish*************")
     
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
