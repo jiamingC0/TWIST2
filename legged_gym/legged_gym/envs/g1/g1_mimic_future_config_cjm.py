@@ -280,7 +280,7 @@ class G1MimicStuFutureCJMCfgDAgger(G1MimicStuFutureCJMCfg):
         runner_class_name = 'OnPolicyDaggerRunnerCJM'
         max_iterations = 30_001
         warm_iters = 100
-        
+
         # logging
         save_interval = 500
         experiment_name = 'test'
@@ -289,14 +289,19 @@ class G1MimicStuFutureCJMCfgDAgger(G1MimicStuFutureCJMCfg):
         load_run = -1
         checkpoint = -1
         resume_path = None
-        
+
         teacher_experiment_name = 'test'
         teacher_proj_name = 'g1_priv_mimic'
         teacher_checkpoint = -1
         eval_student = False
-        
+
         # Wandb model saving option
         save_to_wandb = False  # Set to False to disable wandb model saving
+
+        # Evaluation settings for baseline experiments
+        eval_interval = 200  # Evaluate every N iterations
+        eval_num_episodes = 10  # Number of episodes for evaluation
+        eval_save_metrics = True  # Save evaluation metrics
 
         # from HumanoidMimicCfgPPO.runner
         num_steps_per_env = 24 # per iteration
