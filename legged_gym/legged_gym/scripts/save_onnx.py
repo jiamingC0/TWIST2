@@ -102,7 +102,7 @@ def convert_to_onnx(args):
     n_obs_single = 127  # n_mimic_obs + n_proprio = 35 + 92 = 127
     
     # Total observation size
-    num_observations = n_obs_single * (history_len + 1) + num_future_observations  # 127 * 11 + 360 = 1757
+    num_observations = n_obs_single * (history_len + 1) + num_future_observations  # 127 * 11 + 35 = 1397
     
     # Network architecture parameters
     motion_latent_dim = 128
