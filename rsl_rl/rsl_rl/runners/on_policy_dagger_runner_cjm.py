@@ -319,18 +319,23 @@ class OnPolicyDaggerRunnerCJM:
         self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
     
     def get_cur_entropy(self, it, tot_iter):
-        anneal_ratio = self.alg_cfg.entropy_anneal_ratio
-        entropy_coef_final = self.alg_cfg.entropy_coef_final
-        entropy_coef = self.alg_cfg.entropy_coef
+        entropy_anneal_enabled = self.alg_cfg["entropy_anneal_enabled"]
+        entropy_coef = self.alg_cfg["entropy_coef"]
+        if not entropy_anneal_enabled:
+            return entropy_coef
         
+        anneal_ratio = self.alg_cfg["entropy_anneal_ratio"]
+        entropy_coef_final = self.alg_cfg["entropy_coef_final"]
         if it >= tot_iter * anneal_ratio:
             entropy_coef = entropy_coef_final
-            if self.counter == int(max_iterations * anneal_ratio):
-                cprint(f"[E1] Entropy annealing: entropy_coef = {entropy_coef_final} at iteration {self.counter}", "yellow")
+            if it == int(tot_iter * anneal_ratio):
+                from termcolor import cprint
+                cprint(f"[E1] Entropy annealing: entropy_coef = {entropy_coef_final} at iteration {it}", "yellow")
         else:
             # 线性退火（可选）
-            # progress = min(self.counter / (max_iterations * anneal_ratio), 1.0)
-            # self.entropy_coef = cfg_algorithm.entropy_coef * (1 - progress) + entropy_coef_final * progress
+            # progress = min(it / (tot_iter * anneal_ratio), 1.0)
+            # entropy_coef = self.alg_cfg.entropy_coef * (1 - progress) + entropy_coef_final * progress
+            pass
         return entropy_coef
     def _need_normalizer_update(self, iterations, update_iterations):
         return iterations < update_iterations
