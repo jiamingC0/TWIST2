@@ -1,12 +1,14 @@
-root_path: /root/TWIST2/assets/example_motions/
+root_path: /home/galbot/MyTWIST2/TWIST2/assets/example_motions/
 # Standing motion for stable balance without external trajectory reference
 # This motion provides a long-duration standing pose for evaluation/testing
 motions:
 - file: standing_60s.pkl
   weight: 10.0
   description: 60s standing pose for stable balance
+  task_id: 0
 
 # Original motion (commented out, can be uncommented for training)
 - file: 251215-083327.pkl
   weight: 10.0
   description: train motion
+  task_id: 1

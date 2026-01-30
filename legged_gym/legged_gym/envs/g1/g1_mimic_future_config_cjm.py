@@ -35,21 +35,25 @@ class G1MimicStuFutureCJMCfg(G1MimicPrivCfg):
         # tar_motion_steps_future = [1,2,3,4,5,6,7,8,9,10]
         tar_motion_steps_future = TAR_MOTION_STEPS_FUTURE
         
-        
+        n_task_id = 1
         # Observation dimensions (keep original structure)
-        n_mimic_obs_single = 6 + 29 # Modified: root_vel_xy(2) + root_pos_z(1) + roll_pitch(2) + yaw_ang_vel(1) + dof_pos(29)
+        n_mimic_obs_single = 6 + 29 + n_task_id 
+        # Modified: root_vel_xy(2) + root_pos_z(1) + roll_pitch(2) + yaw_ang_vel(1) + dof_pos(29) + task_id(1)
         n_mimic_obs = len(tar_motion_steps) * n_mimic_obs_single  # Current frame only
         n_proprio = G1MimicPrivCfg.env.n_proprio
         
         
 
         # Future observation dimensions (same structure as student mimic obs)
-        n_future_obs_single = 6 + 29  # Masking disabled -> no indicator channel
+        n_future_obs_single = 6 + 29 + n_task_id # Masking disabled -> no indicator channel
         n_future_obs = len(tar_motion_steps_future) * n_future_obs_single
         
         # Total observation size: maintain original structure + future observations (no force obs needed)
         n_obs_single = n_mimic_obs + n_proprio  # Current frame observation (for history)
+        
         num_observations = n_obs_single * (G1MimicPrivCfg.env.history_len + 1) + n_future_obs
+        #  = 128 * (10 + 1) + 36 = 1433
+         
         #from G1MimicPrivCfg.env
         n_priv_obs_single = n_priv_mimic_obs + n_proprio + n_priv_info
         num_privileged_obs = n_priv_obs_single

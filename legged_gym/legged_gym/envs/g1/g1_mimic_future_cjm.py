@@ -117,6 +117,8 @@ class G1MimicFutureCJM(G1MimicDistill):
         root_pos, root_rot, root_vel, root_ang_vel, dof_pos, dof_vel = self._apply_motion_domain_randomization(
             root_pos, root_rot, root_vel, root_ang_vel, dof_pos, dof_vel)
         
+        task_id = self._motion_lib.get_task_id(motion_ids_tiled)
+        
         # Unified data processing for all frames
         roll, pitch, yaw = euler_from_quaternion(root_rot)
         roll = roll.reshape(self.num_envs, total_steps, 1)
@@ -130,7 +132,9 @@ class G1MimicFutureCJM(G1MimicDistill):
         whole_key_body_pos_global = convert_to_global_root_body_pos(root_pos=root_pos, root_rot=root_rot, body_pos=whole_key_body_pos)
         
         # Reshape all observations (unified)
+        # print(f"before root_pos.shape: {root_pos.shape}")
         root_pos = root_pos.reshape(self.num_envs, total_steps, root_pos.shape[-1])
+        # print(f"after root_pos.shape: {root_pos.shape}")
         root_vel = root_vel.reshape(self.num_envs, total_steps, root_vel.shape[-1])
         root_rot = root_rot.reshape(self.num_envs, total_steps, root_rot.shape[-1])
         root_ang_vel = root_ang_vel.reshape(self.num_envs, total_steps, root_ang_vel.shape[-1])
@@ -142,7 +146,9 @@ class G1MimicFutureCJM(G1MimicDistill):
         root_rot_delta_local = root_rot_delta_local.reshape(self.num_envs, total_steps, root_rot_delta_local.shape[-1])
         whole_key_body_pos = whole_key_body_pos.reshape(self.num_envs, total_steps, -1)
         whole_key_body_pos_global = whole_key_body_pos_global.reshape(self.num_envs, total_steps, -1)
-        
+        # print(f"before root_pos.shape: {task_id.shape}")
+        task_id = task_id.reshape(self.num_envs, total_steps, 1)
+        # print(f"after root_pos.shape: {task_id.shape}")
         root_pos_distance_to_target = root_pos - self.root_states[:, 0:3].reshape(self.num_envs, 1, -1)
         
         return {
@@ -163,6 +169,7 @@ class G1MimicFutureCJM(G1MimicDistill):
             'whole_key_body_pos': whole_key_body_pos,
             'whole_key_body_pos_global': whole_key_body_pos_global,
             'root_pos_distance_to_target': root_pos_distance_to_target,
+            'task_id': task_id,
             'num_priv_steps': num_priv_steps,
             'num_future_steps': num_future_steps,
             'total_steps': total_steps
@@ -186,6 +193,7 @@ class G1MimicFutureCJM(G1MimicDistill):
         roll = motion_data['roll'][:, num_priv_steps:]
         pitch = motion_data['pitch'][:, num_priv_steps:]
         dof_pos = motion_data['dof_pos'][:, num_priv_steps:]
+        task_id = motion_data['task_id'][:, num_priv_steps:]
         
         # Future motion observations (same rich structure as teacher priv_mimic_obs)
         future_obs = torch.cat((
@@ -196,6 +204,7 @@ class G1MimicFutureCJM(G1MimicDistill):
             roll, pitch, # 2 dims (roll/pitch orientation)
             root_ang_vel_local[..., 2:3], # 1 dim (yaw angular velocity)
             dof_pos, # num_dof dims
+            task_id, # 1 dim (task id)
         ), dim=-1) # shape: (num_envs, num_future_steps, 6 + num_dof)
         
         return future_obs
@@ -226,6 +235,7 @@ class G1MimicFutureCJM(G1MimicDistill):
         whole_key_body_pos = motion_data['whole_key_body_pos'][:, :num_steps]
         whole_key_body_pos_global = motion_data['whole_key_body_pos_global'][:, :num_steps]
         root_pos_distance_to_target = motion_data['root_pos_distance_to_target'][:, :num_steps]
+        task_id = motion_data['task_id'][:, :num_steps]
         
         # teacher
         priv_mimic_obs_buf = torch.cat((
@@ -249,6 +259,7 @@ class G1MimicFutureCJM(G1MimicDistill):
             roll, pitch, # 2 dims (roll/pitch orientation)
             root_ang_vel_local[..., 2:3], # 1 dim (yaw angular velocity)
             dof_pos, # num_dof dims
+            task_id, # 1 dim (task id)
         ), dim=-1)[:, self._tar_motion_steps_idx_in_teacher, :] # shape: (num_envs, 1, 6 + 2*num_dof)
             
         priv_mimic_obs = priv_mimic_obs_buf.reshape(self.num_envs, -1)

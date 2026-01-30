@@ -39,6 +39,23 @@ import torch
 import wandb
 
 def train(args):
+    '''
+    print(f"Using device: {args.device}")
+    # 测试 CUDA 是否可用
+    if "cuda" in args.device:
+        print(f"PyTorch CUDA available: {torch.cuda.is_available()}")
+        print(f"PyTorch CUDA device count: {torch.cuda.device_count()}")
+        if torch.cuda.is_available():
+            print(f"PyTorch current device: {torch.cuda.current_device()}")
+            print(f"PyTorch device name: {torch.cuda.get_device_name(0)}")
+        torch.cuda.init()  # 显式初始化
+        print(f"CUDA initialized for device: {args.device}")
+
+        # 测试张量创建
+        test_tensor = torch.tensor([1.0], device="cuda:0")
+        print(f"Test tensor on CUDA: {test_tensor.device}")
+        del test_tensor
+    '''
     args.headless = True
     
     log_pth = LEGGED_GYM_ROOT_DIR + "/logs/{}/".format(args.proj_name) + args.exptid

@@ -58,6 +58,7 @@ class MotionLib:
     def _load_motions(self, motion_file):
         self._motion_names = []
         self._motion_weights = []
+        self._motion_task_id = []
         self._motion_fps = []
         self._motion_dt = []
         self._motion_num_frames = []
@@ -76,7 +77,7 @@ class MotionLib:
         self._motion_local_body_pos = []
         self._body_link_list = []
         
-        motion_files, motion_weights = self._fetch_motion_files(motion_file)
+        motion_files, motion_weights, motion_task_ids= self._fetch_motion_files(motion_file)
         num_motion_files = len(motion_files)
         
         num_sub_motions_total = 0
@@ -98,6 +99,7 @@ class MotionLib:
                 continue
             fps = motion_data["fps"]
             curr_weight = motion_weights[i]
+            curr_task_id = motion_task_ids[i]
             root_pos = torch.tensor(motion_data["root_pos"], dtype=torch.float, device=self._device)
             root_rot = torch.tensor(motion_data["root_rot"], dtype=torch.float, device=self._device)
             dof_pos = torch.tensor(motion_data["dof_pos"], dtype=torch.float, device=self._device)
@@ -115,7 +117,7 @@ class MotionLib:
                 root_pos[..., 2] -= lowest_body_part
                 
             try:
-                self._add_motions(root_pos, root_rot, dof_pos, local_body_pos, fps, curr_weight, curr_file)
+                self._add_motions(root_pos, root_rot, dof_pos, local_body_pos, fps, curr_weight, curr_task_id, curr_file)
             except Exception as e:
                 print(f"Error adding motion {curr_file}: {e}")
                 continue
@@ -146,7 +148,8 @@ class MotionLib:
                     sub_local_body_pos = local_body_pos[start_idx:end_idx]
                     # sub_weight = curr_weight + i # we increase the weight of the sub-motion by i
                     sub_weight = curr_weight
-                    self._add_motions(sub_root_pos, sub_root_rot, sub_dof_pos, sub_local_body_pos, fps, sub_weight, curr_file)
+                    sub_task_id = curr_task_id
+                    self._add_motions(sub_root_pos, sub_root_rot, sub_dof_pos, sub_local_body_pos, fps, sub_weight, sub_task_id, curr_file)
                 # print(f"Decomposed {curr_file} into {num_sub_motions} sub-motions")
         
         print(f"Total number of sub-motions: {num_sub_motions_total}")
@@ -154,10 +157,12 @@ class MotionLib:
         assert len(self._motion_weights) == len(self._motion_names), f"len(self._motion_weights) = {len(self._motion_weights)}, len(self._motion_names) = {len(self._motion_names)}"
         assert len(self._motion_weights) == len(self._motion_files), f"len(self._motion_weights) = {len(self._motion_weights)}, len(self._motion_files) = {len(self._motion_files)}"
         assert len(self._motion_weights) == len(self._motion_fps), f"len(self._motion_weights) = {len(self._motion_weights)}, len(self._motion_fps) = {len(self._motion_fps)}"
+        assert len(self._motion_weights) == len(self._motion_task_id), f"len(self._motion_weights) = {len(self._motion_weights)}, len(self._motion_task_id) = {len(self._motion_task_id)}"
         
         self._motion_weights = torch.tensor(self._motion_weights, dtype=torch.float, device=self._device)
         self._motion_weights /= torch.sum(self._motion_weights)
         
+        self._motion_task_id = torch.tensor(self._motion_task_id, dtype=torch.long, device=self._device)
         self._motion_fps = torch.tensor(self._motion_fps, dtype=torch.float, device=self._device)
         self._motion_dt = torch.tensor(self._motion_dt, dtype=torch.float, device=self._device)
         self._motion_num_frames = torch.tensor(self._motion_num_frames, dtype=torch.long, device=self._device)
@@ -185,7 +190,7 @@ class MotionLib:
         total_len = self.get_total_length()
         print("Loaded {:d} motions with a total length of {:.3f}s.".format(num_motions, total_len))
 
-    def _add_motions(self, root_pos, root_rot, dof_pos, local_body_pos, fps, curr_weight, curr_file):
+    def _add_motions(self, root_pos, root_rot, dof_pos, local_body_pos, fps, curr_weight, curr_task_id, curr_file):
         dt = 1.0 / fps
         num_frames = root_pos.shape[0]
         curr_len = dt * (num_frames - 1)
@@ -212,6 +217,7 @@ class MotionLib:
         dof_vel = torch.gradient(dof_pos, spacing=dt, dim=0)[0]
         
         self._motion_weights.append(curr_weight)
+        self._motion_task_id.append(curr_task_id)
         self._motion_fps.append(fps)
         self._motion_dt.append(dt)
         self._motion_num_frames.append(num_frames)
@@ -310,6 +316,7 @@ class MotionLib:
         if motion_file.endswith(".yaml"):
             motion_files = []
             motion_weights = []
+            motion_task_ids = []
             with open(motion_file, "r") as f:
                 motion_config = yaml.load(f, Loader=yaml.SafeLoader)
             
@@ -318,15 +325,18 @@ class MotionLib:
             for motion_entry in motion_list:
                 curr_file = os.path.join(motion_root_path, motion_entry['file'])
                 curr_weight = motion_entry['weight']
+                curr_task_id = motion_entry.get('task_id', 1)
                 assert(curr_weight >= 0)
 
                 motion_weights.append(curr_weight)
                 motion_files.append(curr_file)
+                motion_task_ids.append(curr_task_id)
         else:
             motion_files = [motion_file]
             motion_weights = [1.0]
+            motion_task_ids = [1]
         
-        return motion_files, motion_weights
+        return motion_files, motion_weights, motion_task_ids
     
     def _calc_frame_blend(self, motion_ids, times):
         num_frames = self._motion_num_frames[motion_ids]
@@ -344,6 +354,8 @@ class MotionLib:
         
         return frame_idx0, frame_idx1, blend
         
+    def get_task_id(self, motion_ids):
+        return self._motion_task_id[motion_ids]
     def calc_motion_frame(self, motion_ids, motion_times):
         motion_loop_num = torch.floor(motion_times / self._motion_lengths[motion_ids])
         motion_times -= motion_loop_num * self._motion_lengths[motion_ids]
