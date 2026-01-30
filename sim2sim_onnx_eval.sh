@@ -75,7 +75,7 @@ echo "Reverse order:            ${REVERSE:+Yes}"
 echo "========================================================================"
 echo ""
 
-python sim2sim_onnx_eval.py \
+python sim2sim_onnx_eval_cjm.py \
     --motion_file "${MOTION_FILE}" \
     --onnx_dir "${ONNX_DIR}" \
     --redis_ip "${REDIS_IP}" \

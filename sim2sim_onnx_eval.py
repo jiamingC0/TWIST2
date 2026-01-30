@@ -278,8 +278,6 @@ def evaluate_all_models(motion_file, onnx_dir, redis_ip="localhost", num_runs=5,
     if not onnx_files:
         cprint("No ONNX models found. Exiting.", "red")
         return
-    for onnx_file in onnx_files:
-        print(f"Evaluating {onnx_file}...")
 
     cprint("="*70, "cyan")
     cprint("AUTOMATED ONNX MODEL EVALUATION", "cyan")
