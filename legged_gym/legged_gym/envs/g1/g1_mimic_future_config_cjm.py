@@ -280,7 +280,14 @@ class G1MimicStuFutureCJMCfgDAgger(G1MimicStuFutureCJMCfg):
         grad_penalty_coef_schedule = [0.00, 0.00, 700, 1000]
         std_schedule = [1.0, 0.4, 4000, 1500]
         entropy_coef = 0.005
-        
+
+        # E1: Entropy 退火配置
+        # 在 locomotion 学会后，entropy 会导致 policy 在危险状态附近继续探索，
+        # 导致 rollout 变短、value target 变 noisy、critic 发散、policy 退化
+        entropy_anneal_enabled = True  # 是否启用 entropy 退火
+        entropy_anneal_ratio = 0.6  # 在 max_iterations 的 60% 处退火
+        entropy_coef_final = 0.0  # 退火后的最终值
+
         dagger_coef_anneal_steps = 60000  # Total steps to anneal dagger_coef to dagger_coef_min
         dagger_coef = 0.2
         dagger_coef_min = 0.1
