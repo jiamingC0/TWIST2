@@ -88,18 +88,18 @@ def convert_to_onnx(args):
     
     # Motion observations (current frame only for student)
     num_motion_steps = 1
-    num_motion_observations = 35  # n_mimic_obs = len(tar_motion_steps) * n_mimic_obs_single = 1 * 35
+    num_motion_observations = 35 + 1  # n_mimic_obs = len(tar_motion_steps) * n_mimic_obs_single = 1 * 35
     
     # Proprioceptive observations
     num_priop_observations = 92  # n_proprio from debug output
     
     # Future motion observations
     num_future_steps = 1  # len(tar_motion_steps_future)
-    n_future_obs_single = 35  # 35 dims per frame
+    n_future_obs_single = 35 + 1  # 35 dims per frame
     num_future_observations = num_future_steps * n_future_obs_single  # n_future_obs = 1 * 35 = 35
     
     # Single step observation size (for history)
-    n_obs_single = 127  # n_mimic_obs + n_proprio = 35 + 92 = 127
+    n_obs_single = num_motion_observations + num_priop_observations  # n_mimic_obs + n_proprio = 35 + 92 = 127
     
     # Total observation size
     num_observations = n_obs_single * (history_len + 1) + num_future_observations  # 127 * 11 + 360 = 1757
