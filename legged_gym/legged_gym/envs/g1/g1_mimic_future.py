@@ -430,10 +430,10 @@ class G1MimicFuture(G1MimicDistill):
         
         return info
     
-    def reset_idx(self, env_ids):
+    def reset_idx(self, env_ids, motion_ids=None):
         """Override reset to include force curriculum updates."""
-        # Call parent reset
-        super().reset_idx(env_ids)
+        # Call parent reset with motion_ids parameter
+        super().reset_idx(env_ids, motion_ids=motion_ids)
         
         # Update force curriculum for reset environments
         if self.enable_force_curriculum:

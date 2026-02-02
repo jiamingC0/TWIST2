@@ -65,9 +65,13 @@ class RealTimePolicyController:
                  measure_fps=False,
                  limit_fps=True,
                  policy_frequency=50,
+                 show_viewer=True,
                  ):
         self.measure_fps = measure_fps
         self.limit_fps = limit_fps
+        self.show_viewer = show_viewer
+        self.should_stop = False
+
         self.redis_client = None
         try:
             self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
@@ -82,13 +86,15 @@ class RealTimePolicyController:
         self.model = mujoco.MjModel.from_xml_path(xml_file)
         self.model.opt.timestep = 0.001
         self.data = mujoco.MjData(self.model)
-        
-        self.viewer = mjv.launch_passive(self.model, self.data, show_left_ui=False, show_right_ui=False)
-        self.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = 0
-        self.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 0
-        self.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 0
-        self.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = 0
-        self.viewer.cam.distance = 2.0
+
+        self.viewer = None
+        if self.show_viewer:
+            self.viewer = mjv.launch_passive(self.model, self.data, show_left_ui=False, show_right_ui=False)
+            self.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = 0
+            self.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 0
+            self.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 0
+            self.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = 0
+            self.viewer.cam.distance = 2.0
 
         self.num_actions = 29
         self.sim_duration = 100000.0
@@ -201,8 +207,61 @@ class RealTimePolicyController:
         sim_torque = self.data.ctrl
         return dof_pos, dof_vel, quat, ang_vel, sim_torque, root_pos
 
-    def run(self):
-        """Main simulation loop"""
+    def stop(self):
+        """Signal the controller to stop."""
+        self.should_stop = True
+
+    def check_fall_from_redis(self):
+        """Check for fall signal from Redis by reading robot state."""
+        try:
+            # Read robot state from Redis
+            state_body_json = self.redis_client.get("state_body_unitree_g1_with_hands")
+            if not state_body_json:
+                return False
+            state_body = json.loads(state_body_json)
+            # state_body format: [ang_vel (3), roll_pitch (2), dof_pos (29)] = 34 dims
+            # ang_vel indices: 0-2, roll_pitch indices: 3-4
+            roll = state_body[3]
+            pitch = state_body[4]
+
+            # Check orientation fall: roll or pitch exceeds 60 degrees (1.05 radians)
+            orientation_fall = abs(roll) > 1.05 or abs(pitch) > 1.05
+
+            # Check height fall: root position z < 0.4m
+            height_fall = False
+            root_pos_json = self.redis_client.get("root_pos_unitree_g1_with_hands")
+            if root_pos_json:
+                root_pos = json.loads(root_pos_json)
+                root_height = root_pos[2]  # z-axis
+                height_fall = root_height < 0.4  # 40cm threshold
+
+            if not height_fall and orientation_fall:
+                root_height = json.loads(root_pos_json)[2] if root_pos_json else 0
+                print(f"[PolicyController] Fall detected: roll={roll:.2f}, pitch={pitch:.2f}, root_height={root_height:.2f}")
+
+            return height_fall or orientation_fall
+        except Exception as e:
+            return False
+
+    def check_motion_server_active(self):
+        """Check if motion server is still active by checking Redis updates."""
+        try:
+            # Check timestamp
+            t_state = self.redis_client.get("t_state")
+            if t_state:
+                t_state_ms = int(t_state)
+                current_ms = int(time.time() * 1000)
+                # If no update for 5 seconds, assume motion server stopped (increased from 2s to 5s)
+                return (current_ms - t_state_ms) < 5000
+            return False
+        except:
+            return False
+
+    def run(self, timeout=None):
+        """
+        Main simulation loop.
+        Returns: 'completed', 'timeout', 'motion_server_stopped', 'fell'
+        """
         print("Starting TWIST2 simulation...")
 
         # Video recording setup
@@ -216,7 +275,14 @@ class RealTimePolicyController:
         self.reset(self.mujoco_default_dof_pos)
 
         steps = int(self.sim_duration / self.sim_dt)
-        pbar = tqdm(range(steps), desc="Simulating TWIST2...")
+        if timeout:
+            steps = int(timeout / self.sim_dt)
+
+        pbar = tqdm(range(steps), desc="Simulating TWIST2...", 
+           position=1, 
+           leave=False, 
+           ncols=100,
+           bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
 
         # Send initial proprio to redis
         initial_obs = np.zeros(self.n_obs_single, dtype=np.float32)
@@ -236,8 +302,25 @@ class RealTimePolicyController:
         policy_step_count = 0
         policy_fps_print_interval = 100
 
+        start_time = time.time()
+        fall_detection_delay = 2.0  # Delay before checking for falls
+
         try:
             for i in pbar:
+                if self.should_stop:
+                    print("[PolicyController] Stopped by external signal")
+                    return 'stopped'
+
+                # Check timeout
+                if timeout and (time.time() - start_time) > timeout:
+                    print("[PolicyController] Timeout reached")
+                    return 'timeout'
+
+                # Check if motion server is still active
+                if not self.check_motion_server_active():
+                    print("[PolicyController] Motion server stopped")
+                    return 'motion_server_stopped'
+
                 t_start = time.time()
                 dof_pos, dof_vel, quat, ang_vel, sim_torque, root_pos = self.extract_data()
 
@@ -260,12 +343,11 @@ class RealTimePolicyController:
                         dof_pos]) # 3+2+29 = 34 dims
 
                     # Send proprio to redis
-
                     self.redis_pipeline.set("state_body_unitree_g1_with_hands", json.dumps(state_body.tolist()))
                     self.redis_pipeline.set("state_hand_left_unitree_g1_with_hands", json.dumps(np.zeros(7).tolist()))
                     self.redis_pipeline.set("state_hand_right_unitree_g1_with_hands", json.dumps(np.zeros(7).tolist()))
                     self.redis_pipeline.set("state_neck_unitree_g1_with_hands", json.dumps(np.zeros(2).tolist()))
-                    self.redis_pipeline.set("root_pos_unitree_g1_with_hands", json.dumps(root_pos.tolist()))  # Add root position
+                    self.redis_pipeline.set("root_pos_unitree_g1_with_hands", json.dumps(root_pos.tolist()))
                     self.redis_pipeline.set("t_state", int(time.time() * 1000)) # current timestamp in ms
                     self.redis_pipeline.execute()
 
@@ -287,38 +369,38 @@ class RealTimePolicyController:
                     future_obs = action_mimic.copy()
                     # Combine all observations: current + history + future (set to current frame for now)
                     obs_buf = np.concatenate([obs_full, obs_hist, future_obs])
-                    
+
 
                     # Ensure correct total observation size
                     assert obs_buf.shape[0] == self.total_obs_size, f"Expected {self.total_obs_size} obs, got {obs_buf.shape[0]}"
-                    
+
                     # Run policy
                     obs_tensor = torch.from_numpy(obs_buf).float().unsqueeze(0).to(self.device)
                     with torch.no_grad():
                         raw_action = self.policy(obs_tensor).cpu().numpy().squeeze()
-                    
+
                     # Measure and track policy execution FPS
                     current_time = time.time()
                     if last_policy_time is not None:
                         policy_interval = current_time - last_policy_time
                         current_policy_fps = 1.0 / policy_interval
-                        
-                        # For frequent printing (every 100 steps)  
+
+                        # For frequent printing (every 100 steps)
                         policy_execution_times.append(policy_interval)
                         policy_step_count += 1
-                        
+
                         # Print policy execution FPS every 100 steps
                         if policy_step_count % policy_fps_print_interval == 0:
                             recent_intervals = policy_execution_times[-policy_fps_print_interval:]
                             avg_interval = np.mean(recent_intervals)
                             avg_execution_fps = 1.0 / avg_interval
-                            print(f"Policy Execution FPS (last {policy_fps_print_interval} steps): {avg_execution_fps:.2f} Hz (avg interval: {avg_interval*1000:.2f}ms)")
-                        
+                            # print(f"Policy Execution FPS (last {policy_fps_print_interval} steps): {avg_execution_fps:.2f} Hz (avg interval: {avg_interval*1000:.2f}ms)")
+
                         # For detailed measurement (every 1000 steps)
                         if measure_fps:
                             fps_measurements.append(current_policy_fps)
                             fps_iteration_count += 1
-                            
+
                             if fps_iteration_count == fps_measurement_target:
                                 avg_fps = np.mean(fps_measurements)
                                 max_fps = np.max(fps_measurements)
@@ -335,19 +417,20 @@ class RealTimePolicyController:
                                 fps_measurements = []
                                 fps_iteration_count = 0
                     last_policy_time = current_time
-                    
+
                     self.last_action = raw_action
                     raw_action = np.clip(raw_action, -10., 10.)
                     scaled_actions = raw_action * self.action_scale
                     pd_target = scaled_actions + self.default_dof_pos
 
                     # self.redis_client.set("action_low_level_unitree_g1", json.dumps(raw_action.tolist()))
-                    
+
                     # Update camera to follow pelvis
-                    pelvis_pos = self.data.xpos[self.model.body("pelvis").id]
-                    self.viewer.cam.lookat = pelvis_pos
-                    self.viewer.sync()
-                    
+                    if self.viewer:
+                        pelvis_pos = self.data.xpos[self.model.body("pelvis").id]
+                        self.viewer.cam.lookat = pelvis_pos
+                        self.viewer.sync()
+
                     if mp4_writer is not None:
                         img = self.viewer.read_pixels()
                         mp4_writer.append_data(img)
@@ -364,30 +447,39 @@ class RealTimePolicyController:
                         }
                         self.proprio_recordings.append(proprio_data)
 
-               
+                    # Check for fall (after delay to avoid initialization false positives)
+                    if (time.time() - start_time) > fall_detection_delay:
+                        if self.check_fall_from_redis():
+                            print("[PolicyController] Robot fell detected")
+                            return 'fell'
+
+
                 # PD control
                 torque = (pd_target - dof_pos) * self.stiffness - dof_vel * self.damping
                 torque = np.clip(torque, -self.torque_limits, self.torque_limits)
-                
+
                 self.data.ctrl[:] = torque
                 mujoco.mj_step(self.model, self.data)
-                
+
                 # Sleep to maintain real-time pace
                 if self.limit_fps:
                     elapsed = time.time() - t_start
                     if elapsed < self.sim_dt:
                         time.sleep(self.sim_dt - elapsed)
 
-                    
+            print("[PolicyController] Simulation completed normally")
+            return 'completed'
+
         except Exception as e:
             print(f"Error in run: {e}")
             import traceback
             traceback.print_exc()
+            return 'error'
         finally:
             if mp4_writer is not None:
                 mp4_writer.close()
                 print("Video saved as twist2_simulation.mp4")
-            
+
             # Save proprio recordings if enabled
             if self.record_proprio and self.proprio_recordings:
                 import pickle
@@ -445,6 +537,7 @@ def main():
         measure_fps=args.measure_fps,
         limit_fps=args.limit_fps,
         policy_frequency=args.policy_frequency,
+        show_viewer=True,
     )
     controller.run()
 
