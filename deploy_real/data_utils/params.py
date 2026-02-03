@@ -14,6 +14,21 @@ DEFAULT_MIMIC_OBS_G1 = np.concatenate([
                         ])
                 ])
 
+DEFAULT_MIMIC_OBS_R1 = np.concatenate([
+                    np.array([0, 0]), # xy velocity
+                    np.array([0.8]), # z position
+                    np.array([0, 0]), # roll/pitch
+                    np.array([0]), # yaw angular velocity
+                    # 26 dof
+                    np.array([-0.2, 0.0, 0.0, 0.4, -0.2, 0.0,  # left leg (6)
+                            -0.2, 0.0, 0.0, 0.4, -0.2, 0.0,  # right leg (6)
+                            0.0, 0.0, # torso (2)
+                            0.0, 0.0, 0.0, 0.0, 0.0, # left arm (5)
+                            0.0, 0.0, 0.0, 0.0, 0.0, # right arm (5)
+                            0.0, 0.0 #head（2）
+                        ])
+                ])
+
 DEFAULT_MIMIC_OBS_G1_MIXED_MODE = np.concatenate([
                     np.array([0, 0]), # xy velocity
                     np.array([0.8]), # z position
@@ -66,8 +81,8 @@ DEFAULT_MIMIC_OBS = {
     "unitree_g1_with_hands": DEFAULT_MIMIC_OBS_G1,
     "booster_t1": DEFAULT_MIMIC_OBS_T1,
     "stanford_toddy": DEFAULT_MIMIC_OBS_TODDY,
+    "unitree_r1": DEFAULT_MIMIC_OBS_R1,
 }
-
 
 DEFAULT_HAND_POSE = {
     "unitree_g1": 
