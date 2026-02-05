@@ -159,10 +159,10 @@ class RealTimePolicyController:
             ])
 
         self.ankle_idx = [4, 5, 10, 11]
-
-        self.n_mimic_obs = 35  # 6 + 29 (modified: root_vel_xy + root_pos_z + roll_pitch + yaw_ang_vel + dof_pos)
+        n_task_id = 1
+        self.n_mimic_obs = 35 + n_task_id  # 6 + 29 (modified: root_vel_xy + root_pos_z + roll_pitch + yaw_ang_vel + dof_pos)
         self.n_proprio = 3 + 2 + 3*29    # from config analysis
-        self.n_obs_single = 35 + 3 + 2 + 3*29  # n_mimic_obs + n_proprio = 35 + 92 = 127
+        self.n_obs_single = 35 + n_task_id + 3 + 2 + 3*29  # n_mimic_obs + n_proprio = 35 + 92 = 127
         self.history_len = 10
         
         self.total_obs_size = self.n_obs_single * (self.history_len + 1) + self.n_mimic_obs   # 127*11 + 35 = 1402
@@ -360,7 +360,8 @@ class RealTimePolicyController:
                     action_left_hand = json.loads(redis_results[1])
                     action_right_hand = json.loads(redis_results[2])
                     action_neck = json.loads(redis_results[3])
-
+                    # 输出action_mimic最后一个元素
+                    # print(f"Action mimic last element: {action_mimic[-1]}")
                     # Construct observation for TWIST2 controller
                     obs_full = np.concatenate([action_mimic, obs_proprio])
                     # Update history

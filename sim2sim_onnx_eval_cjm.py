@@ -72,7 +72,7 @@ def get_motion_duration(motion_file):
 
 def _motion_server_wrapper(queue, args):
     """Wrapper for motion server subprocess."""
-    motion_file, redis_ip = args
+    motion_file, redis_ip, play_standing_after_motion = args
     motion_server = MotionServer(
         motion_file=motion_file,
         robot="unitree_g1_with_hands",
@@ -80,7 +80,8 @@ def _motion_server_wrapper(queue, args):
         steps="1",
         use_remote_control=False,
         send_start_frame_as_end_frame=False,
-        show_viewer=True
+        show_viewer=True,
+        play_standing_after_motion=play_standing_after_motion,
     )
     result = motion_server.run()
     queue.put(('motion', result))
@@ -115,8 +116,10 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
 
     # Get motion duration from pkl file
     
-        
-    motion_duration = float(motion_length)
+    play_standing_after_motion = True
+    #设置延长的时间 5s 或者 0s
+    extend_time = 5.0 if play_standing_after_motion else 0.0
+    motion_duration = float(motion_length) + extend_time
     cprint(f"Motion duration: {motion_duration:.2f} seconds", "cyan")
 
     results = []
@@ -132,7 +135,7 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
             motion_queue = mp.Queue()
             motion_process = mp.Process(
                 target=_motion_server_wrapper,
-                args=(motion_queue, (motion_file, redis_ip))
+                args=(motion_queue, (motion_file, redis_ip, play_standing_after_motion))
             )
             motion_process.start()
             

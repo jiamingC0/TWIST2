@@ -24,7 +24,8 @@ def build_mimic_obs(
     tar_motion_steps,
     device=None,
     robot_type: str = "g1",
-    mask_indicator: bool = False
+    mask_indicator: bool = False,
+    task_id: int = 0
 ):
     """
     Build the mimic_obs at time-step t_step, referencing the code in MimicRunner.
@@ -38,6 +39,8 @@ def build_mimic_obs(
     
     # Suppose we only have a single motion in the .pkl
     motion_ids = torch.zeros(len(tar_motion_steps), dtype=torch.int, device=device)
+
+    motion_task_id = torch.tensor([[task_id]], device=device).reshape(1, -1, 1)
     
     # Retrieve motion frames
     root_pos, root_rot, root_vel, root_ang_vel, dof_pos, dof_vel, local_key_body_pos, root_pos_delta_local, root_rot_delta_local = motion_lib.calc_motion_frame(motion_ids, obs_motion_times)
@@ -77,6 +80,7 @@ def build_mimic_obs(
                     roll, pitch, # 2 dims (roll/pitch orientation)
                     root_ang_vel_local[..., 2:3], # 1 dim (yaw angular velocity)
                     dof_pos,
+                    motion_task_id,
                 ), dim=-1)[:, :]  # shape (1, 1, 6 + num_dof)
         # append mask indicator 1
         mask_indicator = torch.ones(1, mimic_obs_buf.shape[1], 1).to(device)
@@ -90,6 +94,7 @@ def build_mimic_obs(
                     roll, pitch, # 2 dims (roll/pitch orientation)
                     root_ang_vel_local[..., 2:3], # 1 dim (yaw angular velocity)
                     dof_pos,
+                    motion_task_id,
                 ), dim=-1)[:, :]  # shape (1, 1, 6 + num_dof)
 
     # print("root height: ", root_pos[..., 2:3].detach().cpu().numpy().squeeze())
@@ -108,7 +113,8 @@ class MotionServer:
                  steps="1",
                  use_remote_control=False,
                  send_start_frame_as_end_frame=False,
-                 show_viewer=False):
+                 show_viewer=False,
+                 play_standing_after_motion=True):
         self.motion_file = motion_file
         self.robot = robot
         self.redis_ip = redis_ip
@@ -116,6 +122,7 @@ class MotionServer:
         self.use_remote_control = use_remote_control
         self.send_start_frame_as_end_frame = send_start_frame_as_end_frame
         self.show_viewer = show_viewer
+        self.play_standing_after_motion = play_standing_after_motion
 
         # Remote control state
         self.motion_started = False if use_remote_control else True
@@ -143,8 +150,25 @@ class MotionServer:
         self.control_dt = 0.02
         motion_id = torch.tensor([0], device=self.device, dtype=torch.long)
         motion_length = self.motion_lib.get_motion_length(motion_id)
+        self.motion_task_id = self.motion_lib.get_task_id(motion_id)
         motion_length_scalar = motion_length.item() if hasattr(motion_length, 'item') else float(motion_length)
         self.num_steps = int(motion_length_scalar / self.control_dt)
+
+        # Load standing motion library for post-motion playback
+        self.standing_motion_lib = None
+        self.standing_num_steps = 0
+        if self.play_standing_after_motion:
+            standing_motion_file = f"{os.path.dirname(os.path.abspath(__file__))}/../assets/example_motions/standing_60s.pkl"
+            if os.path.exists(standing_motion_file):
+                self.standing_motion_lib = MotionLib(standing_motion_file, device=self.device)
+                standing_motion_id = torch.tensor([0], device=self.device, dtype=torch.long)
+                standing_motion_length = self.standing_motion_lib.get_motion_length(standing_motion_id)
+                standing_length_scalar = standing_motion_length.item() if hasattr(standing_motion_length, 'item') else float(standing_motion_length)
+                self.standing_num_steps = min(int(5.0 / self.control_dt), int(standing_length_scalar / self.control_dt))  # Play for 5 seconds
+                self.standing_task_id = self.standing_motion_lib.get_task_id(standing_motion_id)
+                print(f"[MotionServer] Standing motion loaded: {self.standing_num_steps} steps for 5 seconds")
+            else:
+                print(f"[MotionServer] Warning: Standing motion not found at {standing_motion_file}")
 
         print(f"[MotionServer] Motion file: {self.motion_file}")
         print(f"[MotionServer] Robot: {self.robot}")
@@ -167,7 +191,8 @@ class MotionServer:
                 control_dt=self.control_dt,
                 tar_motion_steps=self.tar_motion_steps_tensor,
                 device=self.device,
-                robot_type=self.robot
+                robot_type=self.robot,
+                task_id = 0
             )
 
         self.last_mimic_obs = DEFAULT_MIMIC_OBS[self.robot]
@@ -238,7 +263,8 @@ class MotionServer:
                     control_dt=self.control_dt,
                     tar_motion_steps=self.tar_motion_steps_tensor,
                     device=self.device,
-                    robot_type=self.robot
+                    robot_type=self.robot,
+                    task_id = self.motion_task_id
                 )
                 # Convert to JSON (list) to put into Redis
                 mimic_obs_list = mimic_obs.tolist() if mimic_obs.ndim == 1 else mimic_obs.flatten().tolist()
@@ -251,7 +277,7 @@ class MotionServer:
 
                 # Print or log it
                 print(f"Step {t_step:4d}/{self.num_steps} => mimic_obs shape = {mimic_obs.shape}", end="\r")
-                
+
                 if self.show_viewer:
                     self.sim_data.qpos[:3] = root_pos
                     root_rot = root_rot[[3,0,1,2]]
@@ -274,9 +300,58 @@ class MotionServer:
             if self.should_stop:
                 print("[MotionServer] Stopped by external signal")
                 return False
-            else:
-                print("[MotionServer] Motion completed normally")
-                return True
+
+            # Play standing motion for 5 seconds after main motion completes
+            if self.play_standing_after_motion and self.standing_motion_lib is not None:
+                print(f"[MotionServer] Playing standing motion for 5 seconds ({self.standing_num_steps} steps)...")
+                standing_t_step = 0
+                while standing_t_step < self.standing_num_steps and not self.should_stop:
+                    t0 = time.time()
+
+                    # Build mimic obs from standing motion library
+                    standing_mimic_obs, root_pos, root_rot, dof_pos, root_vel, root_ang_vel = build_mimic_obs(
+                        motion_lib=self.standing_motion_lib,
+                        t_step=standing_t_step,
+                        control_dt=self.control_dt,
+                        tar_motion_steps=self.tar_motion_steps_tensor,
+                        device=self.device,
+                        robot_type=self.robot,
+                        task_id=self.standing_task_id
+                    )
+
+                    # Send to Redis
+                    mimic_obs_list = standing_mimic_obs.tolist() if standing_mimic_obs.ndim == 1 else standing_mimic_obs.flatten().tolist()
+                    self.redis_client.set(f"action_body_{self.robot}", json.dumps(mimic_obs_list))
+                    self.redis_client.set(f"action_hand_left_{self.robot}", json.dumps(np.zeros(7).tolist()))
+                    self.redis_client.set(f"action_hand_right_{self.robot}", json.dumps(np.zeros(7).tolist()))
+                    self.redis_client.set(f"action_neck_{self.robot}", json.dumps(np.zeros(2).tolist()))
+                    self.redis_client.set("t_state", int(time.time() * 1000))
+                    self.last_mimic_obs = standing_mimic_obs
+
+                    print(f"Standing Step {standing_t_step:4d}/{self.standing_num_steps} => mimic_obs shape = {standing_mimic_obs.shape}", end="\r")
+
+                    if self.show_viewer:
+                        self.sim_data.qpos[:3] = root_pos
+                        root_rot = root_rot[[3,0,1,2]]
+                        self.sim_data.qpos[3:7] = root_rot
+                        self.sim_data.qpos[7:] = dof_pos
+                        mujoco.mj_forward(self.sim_model, self.sim_data)
+                        robot_base_pos = self.sim_data.xpos[self.sim_model.body(self.robot_base).id]
+                        self.viewer.cam.lookat = robot_base_pos
+                        self.viewer.cam.distance = 2.0
+                        self.viewer.sync()
+
+                    standing_t_step += 1
+
+                    elapsed = time.time() - t0
+                    if elapsed < self.control_dt:
+                        time.sleep(self.control_dt - elapsed)
+
+                print()
+                print("[MotionServer] Standing motion playback completed")
+
+            print("[MotionServer] Motion completed normally")
+            return True
 
         except Exception as e:
             print(f"[MotionServer] Error: {e}")
@@ -329,6 +404,7 @@ if __name__ == "__main__":
     parser.add_argument("--vis", action="store_true", help="Visualize the motion")
     parser.add_argument("--use_remote_control", action="store_true", help="Use remote control signals from robot controller")
     parser.add_argument("--send_start_frame_as_end_frame", action="store_true", help="Use motion's first frame as end frame instead of default pose")
+    parser.add_argument("--play_standing_after_motion", action="store_true", default=True, help="Play 5s standing motion after main motion completes")
     parser.add_argument("--redis_ip", type=str, default="localhost", help="Redis IP")
     args = parser.parse_args()
 
@@ -352,6 +428,7 @@ if __name__ == "__main__":
         steps=args.steps,
         use_remote_control=args.use_remote_control,
         send_start_frame_as_end_frame=args.send_start_frame_as_end_frame,
-        show_viewer=args.vis
+        show_viewer=args.vis,
+        play_standing_after_motion=args.play_standing_after_motion
     )
     server.run()
