@@ -12,11 +12,13 @@ import mujoco
 from mujoco.viewer import launch_passive
 import matplotlib.pyplot as plt
 from pose.utils.motion_lib_pkl import MotionLib
-from data_utils.rot_utils import euler_from_quaternion_torch, quat_rotate_inverse_torch
 
 from data_utils.params import DEFAULT_MIMIC_OBS
 from deploy_real.redis_protocol import RedisKeys, MotionPhase
 from deploy_real.redis_io import RedisIO
+from deploy_real.motion_streamer import MotionStreamer
+from deploy_real.stand_manager import StandManager
+from deploy_real.mimic_obs_builder import build_mimic_obs
 
 
 def build_mimic_obs(
@@ -154,6 +156,13 @@ class MotionServer:
 
         # Control parameters
         self.control_dt = 0.02
+        self.motion_streamer = MotionStreamer(
+            motion_lib=self.motion_lib,
+            tar_motion_steps_tensor=self.tar_motion_steps_tensor,
+            control_dt=self.control_dt,
+            robot=self.robot,
+            device=self.device,
+        )
         motion_id = torch.tensor([0], device=self.device, dtype=torch.long)
         motion_length = self.motion_lib.get_motion_length(motion_id)
         self.motion_task_id = self.motion_lib.get_task_id(motion_id)
@@ -175,6 +184,15 @@ class MotionServer:
                 print(f"[MotionServer] Standing motion loaded: pre={self.pre_standing_steps} steps")
             else:
                 print(f"[MotionServer] Warning: Standing motion not found at {standing_motion_file}")
+        self.stand_streamer = None
+        if self.standing_motion_lib is not None:
+            self.stand_streamer = MotionStreamer(
+                motion_lib=self.standing_motion_lib,
+                tar_motion_steps_tensor=self.tar_motion_steps_tensor,
+                control_dt=self.control_dt,
+                robot=self.robot,
+                device=self.device,
+            )
 
         print(f"[MotionServer] Motion file: {self.motion_file}")
         print(f"[MotionServer] Robot: {self.robot}")
@@ -187,6 +205,17 @@ class MotionServer:
         if self.show_viewer:
             self.sim_data = mujoco.MjData(self.sim_model)
             self.viewer = launch_passive(model=self.sim_model, data=self.sim_data, show_left_ui=False, show_right_ui=False)
+        self.stand_manager = StandManager(
+            redis_io=self.redis_io,
+            motion_streamer=self.stand_streamer or self.motion_streamer,
+            robot=self.robot,
+            show_viewer=self.show_viewer,
+            sim_model=self.sim_model,
+            sim_data=self.sim_data,
+            viewer=self.viewer,
+            control_dt=self.control_dt,
+            robot_base=self.robot_base,
+        )
 
         # Extract start frame for end frame if option is enabled
         self.start_frame_mimic_obs = None
@@ -243,40 +272,7 @@ class MotionServer:
             # Pre-stand for a fixed duration (task_id=0)
             if self.play_standing_after_motion and self.standing_motion_lib is not None and self.pre_standing_steps > 0:
                 print(f"[MotionServer] Pre-stand for {self.pre_standing_seconds:.1f}s ({self.pre_standing_steps} steps)...")
-                standing_t_step = 0
-                while standing_t_step < self.pre_standing_steps and not self.should_stop:
-                    t0 = time.time()
-                    standing_mimic_obs, root_pos, root_rot, dof_pos, _, _ = build_mimic_obs(
-                        motion_lib=self.standing_motion_lib,
-                        t_step=standing_t_step,
-                        control_dt=self.control_dt,
-                        tar_motion_steps=self.tar_motion_steps_tensor,
-                        device=self.device,
-                        robot_type=self.robot,
-                        task_id=0
-                    )
-                    mimic_obs_list = standing_mimic_obs.tolist() if standing_mimic_obs.ndim == 1 else standing_mimic_obs.flatten().tolist()
-                    self.redis_io.set_action_body(self.robot, np.asarray(mimic_obs_list, dtype=np.float32))
-                    self.redis_io.set_action_hands_neck(self.robot)
-                    self.redis_io.client.set(self.redis_keys.T_STATE, int(time.time() * 1000))
-                    self.redis_io.set_motion_phase(MotionPhase.PRE_STAND.value)
-                    self.last_mimic_obs = standing_mimic_obs
-
-                    if self.show_viewer:
-                        self.sim_data.qpos[:3] = root_pos
-                        root_rot = root_rot[[3,0,1,2]]
-                        self.sim_data.qpos[3:7] = root_rot
-                        self.sim_data.qpos[7:] = dof_pos
-                        mujoco.mj_forward(self.sim_model, self.sim_data)
-                        robot_base_pos = self.sim_data.xpos[self.sim_model.body(self.robot_base).id]
-                        self.viewer.cam.lookat = robot_base_pos
-                        self.viewer.cam.distance = 2.0
-                        self.viewer.sync()
-
-                    standing_t_step += 1
-                    elapsed = time.time() - t0
-                    if elapsed < self.control_dt:
-                        time.sleep(self.control_dt - elapsed)
+                self.stand_manager.pre_stand(self.pre_standing_steps, task_id=0)
 
             self.redis_io.set_motion_phase(MotionPhase.MOTION.value)
             t_step = 0
@@ -307,18 +303,12 @@ class MotionServer:
                         continue
 
                 # Build a mimic obs from the motion library
-                mimic_obs, root_pos, root_rot, dof_pos, root_vel, root_ang_vel = build_mimic_obs(
-                    motion_lib=self.motion_lib,
-                    t_step=t_step,
-                    control_dt=self.control_dt,
-                    tar_motion_steps=self.tar_motion_steps_tensor,
-                    device=self.device,
-                    robot_type=self.robot,
-                    task_id = self.motion_task_id
-                )
-                # Convert to JSON (list) to put into Redis
-                mimic_obs_list = mimic_obs.tolist() if mimic_obs.ndim == 1 else mimic_obs.flatten().tolist()
-                self.redis_io.set_action_body(self.robot, np.asarray(mimic_obs_list, dtype=np.float32))
+                frame = self.motion_streamer.build_frame(t_step, task_id=self.motion_task_id)
+                mimic_obs = frame.mimic_obs
+                root_pos = frame.root_pos
+                root_rot = frame.root_rot
+                dof_pos = frame.dof_pos
+                self.redis_io.set_action_body(self.robot, mimic_obs)
                 self.redis_io.set_action_hands_neck(self.robot)
                 self.redis_io.client.set(self.redis_keys.T_STATE, int(time.time() * 1000))  # current timestamp in ms
                 self.redis_io.set_motion_phase(MotionPhase.MOTION.value)
@@ -361,23 +351,27 @@ class MotionServer:
             return False
         finally:
             if completed_normally:
-                self.cleanup(time_back_to_default=5.0)
+                self.stand_manager.cleanup(
+                    last_mimic_obs=self.last_mimic_obs,
+                    target_mimic_obs=self.start_frame_mimic_obs if self.send_start_frame_as_end_frame and self.start_frame_mimic_obs is not None else DEFAULT_MIMIC_OBS[self.robot],
+                    seconds=5.0,
+                )
                 self.redis_io.set_motion_phase(MotionPhase.DONE.value)
                 self.redis_io.set_motion_done(True)
             else:
-                self.cleanup(time_back_to_default=5.0)
+                self.stand_manager.cleanup(
+                    last_mimic_obs=self.last_mimic_obs,
+                    target_mimic_obs=self.start_frame_mimic_obs if self.send_start_frame_as_end_frame and self.start_frame_mimic_obs is not None else DEFAULT_MIMIC_OBS[self.robot],
+                    seconds=5.0,
+                )
 
     def cleanup(self, time_back_to_default=2.0):
-        """Clean up and interpolate to default pose."""
-        print("[MotionServer] Cleaning up... Interpolating to default mimic_obs...")
-        target_mimic_obs = self.start_frame_mimic_obs if self.send_start_frame_as_end_frame and self.start_frame_mimic_obs is not None else DEFAULT_MIMIC_OBS[self.robot]
-        for i in range(int(time_back_to_default / self.control_dt)):
-            interp_mimic_obs = self.last_mimic_obs + (target_mimic_obs - self.last_mimic_obs) * (i / (time_back_to_default / self.control_dt))
-            self.redis_io.set_action_body(self.robot, interp_mimic_obs)
-            self.redis_io.set_motion_phase(MotionPhase.CLEANUP.value)
-            time.sleep(self.control_dt)
-        self.redis_io.set_action_body(self.robot, target_mimic_obs)
-
+        """Deprecated: use StandManager.cleanup instead."""
+        self.stand_manager.cleanup(
+            last_mimic_obs=self.last_mimic_obs,
+            target_mimic_obs=self.start_frame_mimic_obs if self.send_start_frame_as_end_frame and self.start_frame_mimic_obs is not None else DEFAULT_MIMIC_OBS[self.robot],
+            seconds=time_back_to_default,
+        )
         if self.viewer:
             self.viewer.close()
 
