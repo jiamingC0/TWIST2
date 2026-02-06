@@ -16,6 +16,7 @@ from deploy_real.redis_io import RedisIO
 from deploy_real.metrics_recorder import MetricsRecorder
 from deploy_real.obs_builder import ObservationBuilder, ObsConfig
 from deploy_real.policy_runner import PolicyRunner, PolicyConfig
+from deploy_real.configs import RealTimePolicyControllerConfig
 
 try:
     import onnxruntime as ort
@@ -71,10 +72,21 @@ class RealTimePolicyController:
                  limit_fps=True,
                  policy_frequency=50,
                  show_viewer=True,
+                 config: RealTimePolicyControllerConfig = None,
                  ):
-        self.measure_fps = measure_fps
-        self.limit_fps = limit_fps
-        self.show_viewer = show_viewer
+        self.config = config or RealTimePolicyControllerConfig(
+            xml_file=xml_file,
+            device=device,
+            record_video=record_video,
+            record_proprio=record_proprio,
+            measure_fps=measure_fps,
+            limit_fps=limit_fps,
+            policy_frequency=policy_frequency,
+            show_viewer=show_viewer,
+        )
+        self.measure_fps = self.config.measure_fps
+        self.limit_fps = self.config.limit_fps
+        self.show_viewer = self.config.show_viewer
         self.should_stop = False
 
         self.redis_client = None
@@ -86,11 +98,11 @@ class RealTimePolicyController:
             print(f"Error connecting to Redis: {e}")
         self.redis_keys = RedisKeys()
 
-        self.device = device
+        self.device = self.config.device
         self.policy = load_onnx_policy(policy_path, device)
 
         # Create MuJoCo sim
-        self.model = mujoco.MjModel.from_xml_path(xml_file)
+        self.model = mujoco.MjModel.from_xml_path(self.config.xml_file)
         self.model.opt.timestep = 0.001
         self.data = mujoco.MjData(self.model)
 
@@ -104,11 +116,11 @@ class RealTimePolicyController:
             self.viewer.cam.distance = 2.0
 
         self.num_actions = 29
-        self.sim_duration = 100000.0
-        self.sim_dt = 0.001
+        self.sim_duration = self.config.sim_duration
+        self.sim_dt = self.config.sim_dt
         # real frequency = 1 / (decimation * sim_dt)
         # ==> decimation = 1 / (real frequency * sim_dt)
-        self.sim_decimation = 1 / (policy_frequency * self.sim_dt)
+        self.sim_decimation = 1 / (self.config.policy_frequency * self.sim_dt)
         print(f"sim_decimation: {self.sim_decimation}")
 
         self.last_action = np.zeros(self.num_actions, dtype=np.float32)
@@ -209,8 +221,8 @@ class RealTimePolicyController:
         )
 
         # Recording
-        self.record_video = record_video
-        self.record_proprio = record_proprio
+        self.record_video = self.config.record_video
+        self.record_proprio = self.config.record_proprio
         self.proprio_recordings = [] if record_proprio else None
         
 
@@ -332,8 +344,8 @@ class RealTimePolicyController:
         policy_fps_print_interval = 100
 
         start_time = time.time()
-        fall_detection_delay = 2.0  # Delay before checking for falls
-        motion_grace_seconds = 10.0
+        fall_detection_delay = self.config.fall_detection_delay  # Delay before checking for falls
+        motion_grace_seconds = self.config.motion_grace_seconds
         saw_t_state = False
         start_time_ms = int(start_time * 1000)
         metrics_recorder = MetricsRecorder()

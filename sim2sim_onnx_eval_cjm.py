@@ -106,9 +106,13 @@ def _policy_controller_wrapper(queue, args):
     try:
         redis_io = RedisIO.connect(host='localhost', port=6379, db=0)
         start_wait = time.time()
+        logged = False
         while True:
             t_state = redis_io.get_t_state()
             if t_state:
+                if not logged:
+                    cprint(f"[PolicyWait] t_state detected: {t_state}", "yellow")
+                    logged = True
                 break
             if time.time() - start_wait > 10.0:
                 cprint("Warning: t_state not found within 10s, starting policy anyway.", "yellow")

@@ -19,6 +19,7 @@ from deploy_real.redis_io import RedisIO
 from deploy_real.motion_streamer import MotionStreamer
 from deploy_real.stand_manager import StandManager
 from deploy_real.mimic_obs_builder import build_mimic_obs
+from deploy_real.configs import MotionServerConfig
 
 
 def build_mimic_obs(
@@ -119,16 +120,27 @@ class MotionServer:
                  send_start_frame_as_end_frame=False,
                  show_viewer=False,
                  play_standing_after_motion=True,
-                 pre_standing_seconds=5.0):
+                 pre_standing_seconds=5.0,
+                 config: MotionServerConfig = None):
+        self.config = config or MotionServerConfig(
+            robot=robot,
+            redis_ip=redis_ip,
+            steps=steps,
+            use_remote_control=use_remote_control,
+            send_start_frame_as_end_frame=send_start_frame_as_end_frame,
+            show_viewer=show_viewer,
+            play_standing_after_motion=play_standing_after_motion,
+            pre_standing_seconds=pre_standing_seconds,
+        )
         self.motion_file = motion_file
-        self.robot = robot
-        self.redis_ip = redis_ip
-        self.steps = steps
-        self.use_remote_control = use_remote_control
-        self.send_start_frame_as_end_frame = send_start_frame_as_end_frame
-        self.show_viewer = show_viewer
-        self.play_standing_after_motion = play_standing_after_motion
-        self.pre_standing_seconds = float(pre_standing_seconds)
+        self.robot = self.config.robot
+        self.redis_ip = self.config.redis_ip
+        self.steps = self.config.steps
+        self.use_remote_control = self.config.use_remote_control
+        self.send_start_frame_as_end_frame = self.config.send_start_frame_as_end_frame
+        self.show_viewer = self.config.show_viewer
+        self.play_standing_after_motion = self.config.play_standing_after_motion
+        self.pre_standing_seconds = float(self.config.pre_standing_seconds)
 
         # Remote control state
         self.motion_started = False if use_remote_control else True
@@ -155,7 +167,7 @@ class MotionServer:
         self.tar_motion_steps_tensor = torch.tensor(self.tar_motion_steps, device=self.device, dtype=torch.int)
 
         # Control parameters
-        self.control_dt = 0.02
+        self.control_dt = self.config.control_dt
         self.motion_streamer = MotionStreamer(
             motion_lib=self.motion_lib,
             tar_motion_steps_tensor=self.tar_motion_steps_tensor,
@@ -354,7 +366,7 @@ class MotionServer:
                 self.stand_manager.cleanup(
                     last_mimic_obs=self.last_mimic_obs,
                     target_mimic_obs=self.start_frame_mimic_obs if self.send_start_frame_as_end_frame and self.start_frame_mimic_obs is not None else DEFAULT_MIMIC_OBS[self.robot],
-                    seconds=5.0,
+                    seconds=self.config.cleanup_seconds,
                 )
                 self.redis_io.set_motion_phase(MotionPhase.DONE.value)
                 self.redis_io.set_motion_done(True)
@@ -362,7 +374,7 @@ class MotionServer:
                 self.stand_manager.cleanup(
                     last_mimic_obs=self.last_mimic_obs,
                     target_mimic_obs=self.start_frame_mimic_obs if self.send_start_frame_as_end_frame and self.start_frame_mimic_obs is not None else DEFAULT_MIMIC_OBS[self.robot],
-                    seconds=5.0,
+                    seconds=self.config.cleanup_seconds,
                 )
 
     def cleanup(self, time_back_to_default=2.0):
