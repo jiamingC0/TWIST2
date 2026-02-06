@@ -12,6 +12,7 @@ from tqdm import tqdm
 import os
 from data_utils.rot_utils import quatToEuler, quat_rotate_inverse_np
 from deploy_real.redis_protocol import RedisKeys, motion_phase_is_stand, is_truthy, normalize_motion_phase
+from deploy_real.metrics_recorder import MetricsRecorder
 
 try:
     import onnxruntime as ort
@@ -310,38 +311,14 @@ class RealTimePolicyController:
         motion_grace_seconds = 10.0
         saw_t_state = False
         start_time_ms = int(start_time * 1000)
-        def _init_metrics_bucket():
-            return {
-                "steps": 0,
-                "tracking_dof_abs_sum": 0.0,
-                "tracking_dof_sq_sum": 0.0,
-                "root_pos_z_abs_sum": 0.0,
-                "root_vel_xy_l2_sum": 0.0,
-                "roll_pitch_abs_sum": 0.0,
-                "yaw_ang_vel_abs_sum": 0.0,
-                "action_delta_abs_sum": 0.0,
-                "torque_abs_sum": 0.0,
-                "power_abs_sum": 0.0,
-                "root_height_sum": 0.0,
-                "root_height_sq_sum": 0.0,
-                "roll_sum": 0.0,
-                "roll_sq_sum": 0.0,
-                "pitch_sum": 0.0,
-                "pitch_sq_sum": 0.0,
-                "mimic_obs_mismatch_count": 0,
-            }
-
-        metrics_total = _init_metrics_bucket()
-        metrics_stand = _init_metrics_bucket()
-        metrics_motion = _init_metrics_bucket()
-        last_action_for_smoothness = None
+        metrics_recorder = MetricsRecorder()
 
         def _format_result(status):
             if not collect_metrics:
                 return status
             elapsed_time = time.time() - start_time
             policy_dt = float(self.sim_decimation * self.sim_dt)
-            steps_total = metrics_total["steps"]
+            steps_total = metrics_recorder.total.steps
             if steps_total <= 0:
                 return {
                     "status": status,
@@ -355,45 +332,10 @@ class RealTimePolicyController:
                 }
             sim_time = steps_total * policy_dt
 
-            def _bucket_to_metrics(bucket):
-                steps = bucket["steps"]
-                if steps <= 0:
-                    return {}
-                return {
-                    "tracking_dof_abs_mean": bucket["tracking_dof_abs_sum"] / steps,
-                    "tracking_dof_abs_std": float(np.sqrt(max(
-                        0.0,
-                        bucket["tracking_dof_sq_sum"] / steps - (bucket["tracking_dof_abs_sum"] / steps) ** 2
-                    ))),
-                    "root_pos_z_abs_mean": bucket["root_pos_z_abs_sum"] / steps,
-                    "root_vel_xy_l2_mean": bucket["root_vel_xy_l2_sum"] / steps,
-                    "roll_pitch_abs_mean": bucket["roll_pitch_abs_sum"] / steps,
-                    "yaw_ang_vel_abs_mean": bucket["yaw_ang_vel_abs_sum"] / steps,
-                    "action_delta_abs_mean": bucket["action_delta_abs_sum"] / steps,
-                    "torque_abs_mean": bucket["torque_abs_sum"] / steps,
-                    "power_abs_mean": bucket["power_abs_sum"] / steps,
-                    "root_height_mean": bucket["root_height_sum"] / steps,
-                    "root_height_std": float(np.sqrt(max(
-                        0.0,
-                        bucket["root_height_sq_sum"] / steps - (bucket["root_height_sum"] / steps) ** 2
-                    ))),
-                    "roll_mean": bucket["roll_sum"] / steps,
-                    "roll_std": float(np.sqrt(max(
-                        0.0,
-                        bucket["roll_sq_sum"] / steps - (bucket["roll_sum"] / steps) ** 2
-                    ))),
-                    "pitch_mean": bucket["pitch_sum"] / steps,
-                    "pitch_std": float(np.sqrt(max(
-                        0.0,
-                        bucket["pitch_sq_sum"] / steps - (bucket["pitch_sum"] / steps) ** 2
-                    ))),
-                    "mimic_obs_mismatch_count": bucket["mimic_obs_mismatch_count"],
-                    "steps": steps,
-                }
-
-            metrics_out_total = _bucket_to_metrics(metrics_total)
-            metrics_out_stand = _bucket_to_metrics(metrics_stand)
-            metrics_out_motion = _bucket_to_metrics(metrics_motion)
+            metrics_out = metrics_recorder.as_dict()
+            metrics_out_total = metrics_out["total"]
+            metrics_out_stand = metrics_out["stand"]
+            metrics_out_motion = metrics_out["motion"]
             result = {
                 "status": status,
                 "steps": steps_total,
@@ -518,81 +460,25 @@ class RealTimePolicyController:
                             phase_raw = None
                         phase_raw = normalize_motion_phase(phase_raw)
                         if motion_phase_is_stand(phase_raw):
-                            phase_bucket = metrics_stand
+                            phase_bucket = "stand"
                         elif phase_raw == "motion":
-                            phase_bucket = metrics_motion
+                            phase_bucket = "motion"
                         else:
                             phase_bucket = None
 
-                        metrics_total["steps"] += 1
-                        if phase_bucket is not None:
-                            phase_bucket["steps"] += 1
-                        # Parse target dof from mimic obs: [root_vel_xy(2), root_pos_z(1), roll(1), pitch(1),
-                        # yaw_ang_vel(1), dof_pos(29), task_id(1), (optional mask)]
-                        if action_mimic is not None and len(action_mimic) >= 6 + 29:
-                            target_dof = np.asarray(action_mimic[6:6 + 29], dtype=np.float32)
-                            dof_err = np.abs(dof_pos - target_dof).mean()
-                            metrics_total["tracking_dof_abs_sum"] += float(dof_err)
-                            metrics_total["tracking_dof_sq_sum"] += float(dof_err ** 2)
-                            if phase_bucket is not None:
-                                phase_bucket["tracking_dof_abs_sum"] += float(dof_err)
-                                phase_bucket["tracking_dof_sq_sum"] += float(dof_err ** 2)
-
-                            # Root tracking targets
-                            target_root_pos_z = float(action_mimic[2])
-                            target_roll = float(action_mimic[3])
-                            target_pitch = float(action_mimic[4])
-                            target_yaw_ang_vel = float(action_mimic[5])
-                            metrics_total["root_pos_z_abs_sum"] += float(abs(root_pos[2] - target_root_pos_z))
-                            metrics_total["roll_pitch_abs_sum"] += float(
-                                0.5 * (abs(rpy[0] - target_roll) + abs(rpy[1] - target_pitch))
-                            )
-                            metrics_total["yaw_ang_vel_abs_sum"] += float(abs(ang_vel[2] - target_yaw_ang_vel))
-                            if phase_bucket is not None:
-                                phase_bucket["root_pos_z_abs_sum"] += float(abs(root_pos[2] - target_root_pos_z))
-                                phase_bucket["roll_pitch_abs_sum"] += float(
-                                    0.5 * (abs(rpy[0] - target_roll) + abs(rpy[1] - target_pitch))
-                                )
-                                phase_bucket["yaw_ang_vel_abs_sum"] += float(abs(ang_vel[2] - target_yaw_ang_vel))
-
-                            # Root velocity in local frame
-                            root_vel_local = quat_rotate_inverse_np(quat, root_vel, scalar_first=True)
-                            root_vel_xy_err = np.linalg.norm(root_vel_local[:2] - np.asarray(action_mimic[0:2], dtype=np.float32))
-                            metrics_total["root_vel_xy_l2_sum"] += float(root_vel_xy_err)
-                            if phase_bucket is not None:
-                                phase_bucket["root_vel_xy_l2_sum"] += float(root_vel_xy_err)
-                        else:
-                            metrics_total["mimic_obs_mismatch_count"] += 1
-                            if phase_bucket is not None:
-                                phase_bucket["mimic_obs_mismatch_count"] += 1
-
-                        if last_action_for_smoothness is not None:
-                            metrics_total["action_delta_abs_sum"] += float(
-                                np.abs(raw_action - last_action_for_smoothness).mean()
-                            )
-                            if phase_bucket is not None:
-                                phase_bucket["action_delta_abs_sum"] += float(
-                                    np.abs(raw_action - last_action_for_smoothness).mean()
-                                )
-                        last_action_for_smoothness = raw_action.copy()
-
-                        metrics_total["torque_abs_sum"] += float(np.abs(sim_torque).mean())
-                        metrics_total["power_abs_sum"] += float(np.abs(sim_torque * dof_vel).mean())
-                        metrics_total["root_height_sum"] += float(root_pos[2])
-                        metrics_total["root_height_sq_sum"] += float(root_pos[2] ** 2)
-                        metrics_total["roll_sum"] += float(rpy[0])
-                        metrics_total["roll_sq_sum"] += float(rpy[0] ** 2)
-                        metrics_total["pitch_sum"] += float(rpy[1])
-                        metrics_total["pitch_sq_sum"] += float(rpy[1] ** 2)
-                        if phase_bucket is not None:
-                            phase_bucket["torque_abs_sum"] += float(np.abs(sim_torque).mean())
-                            phase_bucket["power_abs_sum"] += float(np.abs(sim_torque * dof_vel).mean())
-                            phase_bucket["root_height_sum"] += float(root_pos[2])
-                            phase_bucket["root_height_sq_sum"] += float(root_pos[2] ** 2)
-                            phase_bucket["roll_sum"] += float(rpy[0])
-                            phase_bucket["roll_sq_sum"] += float(rpy[0] ** 2)
-                            phase_bucket["pitch_sum"] += float(rpy[1])
-                            phase_bucket["pitch_sq_sum"] += float(rpy[1] ** 2)
+                        root_vel_local = quat_rotate_inverse_np(quat, root_vel, scalar_first=True)
+                        metrics_recorder.update(
+                            action_mimic=np.asarray(action_mimic) if action_mimic is not None else None,
+                            dof_pos=dof_pos,
+                            rpy=rpy,
+                            ang_vel=ang_vel,
+                            root_pos=root_pos,
+                            root_vel_local=root_vel_local,
+                            raw_action=raw_action,
+                            sim_torque=sim_torque,
+                            dof_vel=dof_vel,
+                            phase_bucket=phase_bucket,
+                        )
 
                         # If motion done flag is set, finish gracefully.
                         try:
