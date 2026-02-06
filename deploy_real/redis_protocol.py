@@ -24,6 +24,10 @@ class RedisKeys:
     MOTION_DONE: str = "motion_done"
     POLICY_STOP: str = "policy_stop"
 
+    # Remote control keys
+    MOTION_START_SIGNAL: str = "motion_start_signal"
+    MOTION_EXIT_SIGNAL: str = "motion_exit_signal"
+
     # State keys (sim -> redis)
     STATE_BODY: str = "state_body_{robot}"
     STATE_HAND_LEFT: str = "state_hand_left_{robot}"
@@ -59,4 +63,3 @@ def normalize_motion_phase(phase) -> str:
     if isinstance(phase, bytes):
         phase = phase.decode("utf-8")
     return str(phase)
-

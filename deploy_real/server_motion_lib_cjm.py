@@ -246,8 +246,8 @@ class MotionServer:
 
         if self.use_remote_control:
             # Reset start and exit signal to 0
-            self.redis_io.set_value("motion_start_signal", "0")
-            self.redis_io.set_value("motion_exit_signal", "0")
+            self.redis_io.set_value(self.redis_keys.MOTION_START_SIGNAL, "0")
+            self.redis_io.set_value(self.redis_keys.MOTION_EXIT_SIGNAL, "0")
 
     def stop(self):
         """Signal the server to stop."""
@@ -259,11 +259,11 @@ class MotionServer:
 
         try:
             # Check for start signal (B button from robot controller)
-            start_signal = self.redis_io.get_value("motion_start_signal")
+            start_signal = self.redis_io.get_value(self.redis_keys.MOTION_START_SIGNAL)
             start_pressed = start_signal == b"1" if start_signal else False
 
             # Check for exit signal (Select button from robot controller)
-            exit_signal = self.redis_io.get_value("motion_exit_signal")
+            exit_signal = self.redis_io.get_value(self.redis_keys.MOTION_EXIT_SIGNAL)
             exit_pressed = exit_signal == b"1" if exit_signal else False
 
             return start_pressed, exit_pressed
