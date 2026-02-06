@@ -15,6 +15,7 @@ from deploy_real.redis_protocol import RedisKeys, motion_phase_is_stand, is_trut
 from deploy_real.redis_io import RedisIO
 from deploy_real.metrics_recorder import MetricsRecorder
 from deploy_real.obs_builder import ObservationBuilder, ObsConfig
+from deploy_real.policy_runner import PolicyRunner, PolicyConfig
 
 try:
     import onnxruntime as ort
@@ -163,6 +164,16 @@ class RealTimePolicyController:
                 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
                 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
             ])
+
+        self.policy_runner = PolicyRunner(
+            self.policy,
+            self.device,
+            PolicyConfig(
+                action_scale=self.action_scale,
+                default_dof_pos=self.default_dof_pos,
+                action_clip=10.0,
+            ),
+        )
 
         self.ankle_idx = [4, 5, 10, 11]
         n_task_id = 1
@@ -439,9 +450,7 @@ class RealTimePolicyController:
                     self.proprio_history_buf.append(obs_full)
 
                     # Run policy
-                    obs_tensor = torch.from_numpy(obs_buf).float().unsqueeze(0).to(self.device)
-                    with torch.no_grad():
-                        raw_action = self.policy(obs_tensor).cpu().numpy().squeeze()
+                    raw_action = self.policy_runner.infer_action(obs_buf)
 
                     if collect_metrics:
                         # Read motion phase for segmented metrics
@@ -528,9 +537,8 @@ class RealTimePolicyController:
                     last_policy_time = current_time
 
                     self.last_action = raw_action
-                    raw_action = np.clip(raw_action, -10., 10.)
-                    scaled_actions = raw_action * self.action_scale
-                    pd_target = scaled_actions + self.default_dof_pos
+                    scaled_actions = self.policy_runner.scale_action(raw_action)
+                    pd_target = self.policy_runner.to_pd_target(scaled_actions)
 
                     # self.redis_client.set("action_low_level_unitree_g1", json.dumps(raw_action.tolist()))
 
