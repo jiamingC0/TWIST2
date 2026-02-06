@@ -583,7 +583,7 @@ def evaluate_all_models(motion_file, onnx_dir, redis_ip="localhost", num_runs=5,
 
     # Generate summary report
     if all_results:
-        generate_summary(all_results, output_dir)
+        generate_summary(all_results, output_dir, onnx_dir)
 
 
 def print_result_summary(result):
@@ -607,17 +607,20 @@ def print_result_summary(result):
         cprint(f"  Roll/Pitch Err:    {pm_total['roll_pitch_abs_mean']:.4f}", "white")
 
 
-def generate_summary(all_results, output_dir):
+def generate_summary(all_results, output_dir, onnx_dir=None):
     """Generate comprehensive summary report."""
     if output_dir is None:
         output_dir = os.path.join(os.getcwd(), "onnx_evaluation_results")
 
     os.makedirs(output_dir, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    onnx_dir_name = os.path.basename(os.path.normpath(onnx_dir)) if onnx_dir else "onnx"
+    run_dir = os.path.join(output_dir, f"{timestamp}-{onnx_dir_name}")
+    os.makedirs(run_dir, exist_ok=True)
 
     # Save detailed JSON results
-    results_path = os.path.join(output_dir, "evaluation_results.json")
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    results_path_ts = os.path.join(output_dir, f"evaluation_results_{timestamp}.json")
+    results_path = os.path.join(run_dir, "evaluation_results.json")
+    results_path_ts = os.path.join(run_dir, f"evaluation_results_{timestamp}.json")
     with open(results_path, 'w') as f:
         json.dump({
             'motion_file': all_results[0]['runs'][0].get('motion_file', 'unknown') if all_results and all_results[0].get('runs') else 'unknown',
@@ -663,6 +666,43 @@ def generate_summary(all_results, output_dir):
     cprint(f"Fall Rate:    {best_success['fall_rate']*100:.1f}%", "green")
 
     cprint(f"\n{'='*70}\n", "cyan")
+
+    # Write summary text file
+    summary_path = os.path.join(run_dir, "result.txt")
+    with open(summary_path, "w") as f:
+        f.write("OVERALL SUMMARY\n")
+        f.write("=" * 70 + "\n")
+        for result in all_results:
+            pm = (result.get("policy_metrics_weighted") or {}).get("total") or {}
+            f.write(f"\n{result['model_name']}\n")
+            f.write(f"  Success Rate:     {result['success_rate']*100:.1f}%\n")
+            f.write(f"  Fall Rate:        {result['fall_rate']*100:.1f}%\n")
+            f.write(f"  Completion Rate:  {result['completion_rate']*100:.1f}%\n")
+            f.write(f"  Avg Completion:   {result['avg_completion_ratio']*100:.1f}%\n")
+            # 输出参与最优评判的关键指标
+            f.write(f"  Track DOF Err:    {pm.get('tracking_dof_abs_mean')}\n")
+            f.write(f"  Root Vel Err:     {pm.get('root_vel_xy_l2_mean')}\n")
+            f.write(f"  Roll/Pitch Err:   {pm.get('roll_pitch_abs_mean')}\n")
+            f.write(f"  Yaw Ang Err:      {pm.get('yaw_ang_vel_abs_mean')}\n")
+            f.write(f"  Torque Mean:      {pm.get('torque_abs_mean')}\n")
+            f.write(f"  Power Mean:       {pm.get('power_abs_mean')}\n")
+            f.write(f"  Root Height Std:  {pm.get('root_height_std')}\n")
+
+        f.write("\n" + "=" * 70 + "\n")
+        f.write("BEST MODEL (by success_rate, then lowest tracking_dof_abs_mean)\n")
+        f.write("=" * 70 + "\n")
+        f.write(f"Model: {best_success['model_name']}\n")
+        f.write(f"Success Rate: {best_success['success_rate']*100:.1f}%\n")
+        f.write(f"Fall Rate:    {best_success['fall_rate']*100:.1f}%\n")
+        pm_best = (best_success.get("policy_metrics_weighted") or {}).get("total") or {}
+        f.write(f"Track DOF Err: {pm_best.get('tracking_dof_abs_mean')}\n")
+        f.write(f"Root Vel Err:  {pm_best.get('root_vel_xy_l2_mean')}\n")
+        f.write(f"Roll/Pitch Err:{pm_best.get('roll_pitch_abs_mean')}\n")
+        f.write(f"Yaw Ang Err:   {pm_best.get('yaw_ang_vel_abs_mean')}\n")
+        f.write(f"Torque Mean:   {pm_best.get('torque_abs_mean')}\n")
+        f.write(f"Power Mean:    {pm_best.get('power_abs_mean')}\n")
+        f.write(f"Root Height Std:{pm_best.get('root_height_std')}\n")
+    cprint(f"Summary saved to: {summary_path}", "green")
 
 
 def main():
