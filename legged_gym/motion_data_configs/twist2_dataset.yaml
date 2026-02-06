@@ -1,4 +1,4 @@
-root_path: /home/galbot/MyTWIST2/TWIST2/assets/example_motions/
+root_path: /root/TWIST2/assets/example_motions/
 # Standing motion for stable balance without external trajectory reference
 # This motion provides a long-duration standing pose for evaluation/testing
 motions:

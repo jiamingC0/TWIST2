@@ -200,19 +200,19 @@ class G1MimicStuFutureCJMCfg(G1MimicPrivCfg):
             
             tracking_keybody_pos_global = 2.0
             alive = 0.5
-            feet_slip = -0.1
-            feet_contact_forces = -5e-4      
-            feet_stumble = -1.25
-            dof_pos_limits = -5.0
-            dof_torque_limits = -1.0
-            dof_vel = -1e-4
-            dof_acc = -5e-8
-            action_rate = -0.05
+            # feet_slip = -0.1
+            # feet_contact_forces = -5e-4      
+            # feet_stumble = -1.25
+            # dof_pos_limits = -5.0
+            # dof_torque_limits = -1.0
+            # dof_vel = -1e-4
+            # dof_acc = -5e-8
+            # action_rate = -0.05
             # action_rate = -0.01
             feet_air_time = 5.0
-            ang_vel_xy = -0.01            
-            ankle_dof_acc = -5e-8 * 2
-            ankle_dof_vel = -1e-4 * 2
+            # ang_vel_xy = -0.01            
+            # ankle_dof_acc = -5e-8 * 2
+            # ankle_dof_vel = -1e-4 * 2
             
         min_dist = 0.1
         max_dist = 0.4
