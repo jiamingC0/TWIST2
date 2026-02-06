@@ -253,6 +253,14 @@ class RealTimePolicyController:
         """Signal the controller to stop."""
         self.should_stop = True
 
+    def close_viewer(self):
+        if self.viewer:
+            try:
+                self.viewer.close()
+            except Exception:
+                pass
+            self.viewer = None
+
     def check_fall_from_redis(self):
         """Check for fall signal from Redis by reading robot state."""
         try:
@@ -498,6 +506,7 @@ class RealTimePolicyController:
                             motion_done = self.redis_io.get_motion_done()
                             if is_truthy(motion_done):
                                 print("[PolicyController] Motion done signal received")
+                                self.close_viewer()
                                 return _format_result('motion_done')
                         except Exception:
                             pass
@@ -505,6 +514,7 @@ class RealTimePolicyController:
                             policy_stop = self.redis_io.get_policy_stop()
                             if is_truthy(policy_stop):
                                 print("[PolicyController] Policy stop signal received")
+                                self.close_viewer()
                                 return _format_result('policy_stop')
                         except Exception:
                             pass
@@ -616,8 +626,7 @@ class RealTimePolicyController:
                     pickle.dump(self.proprio_recordings, f)
                 print("Proprioceptive recordings saved as twist2_proprio_recordings.pkl")
 
-            if self.viewer:
-                self.viewer.close()
+            self.close_viewer()
             print("Simulation finished.")
 
 

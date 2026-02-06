@@ -226,7 +226,7 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
             # If motion completed, give policy a short grace to report metrics.
             if motion_completed and policy_process.is_alive():
                 grace_start = time.time()
-                grace_seconds = 3.0
+                grace_seconds = 5.0
                 while time.time() - grace_start < grace_seconds:
                     if not policy_process.is_alive():
                         break
@@ -263,13 +263,21 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
                         policy_process.kill()
                         policy_process.join(timeout=2)
                 elif completed:
-                    cprint(f"    Terminating policy controller (after motion completed)...", "yellow")
-                    policy_killed_after_motion = True
-                    policy_process.terminate()
-                    policy_process.join(timeout=2)
+                    # Wait up to 5s for policy to exit after motion completion.
+                    grace_start = time.time()
+                    grace_seconds = 5.0
+                    while time.time() - grace_start < grace_seconds:
+                        if not policy_process.is_alive():
+                            break
+                        time.sleep(0.05)
                     if policy_process.is_alive():
-                        policy_process.kill()
+                        cprint(f"    Terminating policy controller (after 5s grace)...", "yellow")
+                        policy_killed_after_motion = True
+                        policy_process.terminate()
                         policy_process.join(timeout=2)
+                        if policy_process.is_alive():
+                            policy_process.kill()
+                            policy_process.join(timeout=2)
 
             # Get results from queues (if any)
             motion_result = None
