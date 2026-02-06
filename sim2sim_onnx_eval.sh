@@ -20,11 +20,14 @@ if [ $# -lt 2 ]; then
     echo "  --redis_ip IP   Redis IP (default: localhost)"
     echo "  --output_dir DIR Output directory for results"
     echo "  --reverse        Evaluate models in reverse order (descending)"
+    echo "  --motion_viewer  Enable MotionServer viewer"
+    echo "  --policy_viewer  Enable PolicyController viewer"
     echo ""
     echo "Example:"
     echo "  $0 assets/example_motions/0807_yanjie_walk_001.pkl assets/ckpts/onnx/"
     echo "  $0 assets/example_motions/0807_yanjie_walk_001.pkl assets/ckpts/onnx/ --num_runs 10"
     echo "  $0 assets/example_motions/0807_yanjie_walk_001.pkl assets/ckpts/onnx/ --reverse"
+    echo "  $0 assets/example_motions/0807_yanjie_walk_001.pkl assets/ckpts/onnx/ --motion_viewer --policy_viewer"
     echo ""
     exit 1
 fi
@@ -35,6 +38,8 @@ NUM_RUNS=5
 REDIS_IP="localhost"
 OUTPUT_DIR=""
 REVERSE=""
+MOTION_VIEWER=""
+POLICY_VIEWER=""
 
 shift 2
 while [ $# -gt 0 ]; do
@@ -54,6 +59,12 @@ while [ $# -gt 0 ]; do
         --reverse)
             REVERSE="--reverse"
             shift
+            ;;
+        --motion_viewer)
+            MOTION_VIEWER="--motion_viewer"
+            ;;
+        --policy_viewer)
+            POLICY_VIEWER="--policy_viewer"
             ;;
         *)
             echo "Unknown option: $1"
@@ -81,7 +92,9 @@ python sim2sim_onnx_eval_cjm.py \
     --redis_ip "${REDIS_IP}" \
     --num_runs ${NUM_RUNS} \
     ${OUTPUT_DIR:+--output_dir "${OUTPUT_DIR}"} \
-    ${REVERSE}
+    ${REVERSE} \
+    ${MOTION_VIEWER} \
+    ${POLICY_VIEWER}
 
 echo ""
 echo "========================================================================"

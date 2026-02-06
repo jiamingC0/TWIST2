@@ -73,7 +73,7 @@ def get_motion_duration(motion_file):
 
 def _motion_server_wrapper(queue, args):
     """Wrapper for motion server subprocess."""
-    motion_file, redis_ip, play_standing_after_motion = args
+    motion_file, redis_ip, play_standing_after_motion, motion_viewer = args
     motion_server = MotionServer(
         motion_file=motion_file,
         robot="unitree_g1_with_hands",
@@ -81,7 +81,7 @@ def _motion_server_wrapper(queue, args):
         steps="1",
         use_remote_control=False,
         send_start_frame_as_end_frame=False,
-        show_viewer=True,
+        show_viewer=motion_viewer,
         play_standing_after_motion=play_standing_after_motion,
     )
     result = motion_server.run()
@@ -90,7 +90,7 @@ def _motion_server_wrapper(queue, args):
 
 def _policy_controller_wrapper(queue, args):
     """Wrapper for policy controller subprocess."""
-    onnx_file, timeout = args
+    onnx_file, timeout, policy_viewer = args
     policy_controller = RealTimePolicyController(
         xml_file="assets/g1/g1_sim2sim_29dof.xml",
         policy_path=onnx_file,
@@ -100,7 +100,7 @@ def _policy_controller_wrapper(queue, args):
         measure_fps=False,
         limit_fps=True,
         policy_frequency=100,
-        show_viewer=True
+        show_viewer=policy_viewer
     )
     # Wait until motion server starts streaming (t_state appears).
     try:
@@ -124,7 +124,7 @@ def _policy_controller_wrapper(queue, args):
     queue.put(('policy', result))
 
 
-def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="localhost", exp_idx=0, num_runs=5):
+def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="localhost", exp_idx=0, num_runs=5, motion_viewer=False, policy_viewer=False):
     """
     Run a single experiment with specified ONNX model using multiprocessing.
     Returns metrics dict if experiment completed successfully, None otherwise.
@@ -164,7 +164,7 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
             motion_queue = mp.Queue()
             motion_process = mp.Process(
                 target=_motion_server_wrapper,
-                args=(motion_queue, (motion_file, redis_ip, play_standing_after_motion))
+                args=(motion_queue, (motion_file, redis_ip, play_standing_after_motion, motion_viewer))
             )
             motion_process.start()
             
@@ -174,7 +174,7 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
             policy_queue = mp.Queue()
             policy_process = mp.Process(
                 target=_policy_controller_wrapper,
-                args=(policy_queue, (onnx_file, timeout))
+                args=(policy_queue, (onnx_file, timeout, policy_viewer))
             )
             policy_process.start()
 
@@ -547,7 +547,7 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
         return None
 
 
-def evaluate_all_models(motion_file, onnx_dir, redis_ip="localhost", num_runs=5, output_dir=None, reverse=False):
+def evaluate_all_models(motion_file, onnx_dir, redis_ip="localhost", num_runs=5, output_dir=None, reverse=False, motion_viewer=False, policy_viewer=False):
     """Evaluate all ONNX models in the specified directory."""
     onnx_files = find_onnx_models(onnx_dir, reverse=reverse)
 
@@ -572,7 +572,7 @@ def evaluate_all_models(motion_file, onnx_dir, redis_ip="localhost", num_runs=5,
 
     for exp_idx, onnx_file in enumerate(onnx_files):
         result = run_single_experiment(
-            motion_file, motion_length, onnx_file, redis_ip, exp_idx, num_runs
+            motion_file, motion_length, onnx_file, redis_ip, exp_idx, num_runs, motion_viewer, policy_viewer
         )
 
         if result:
@@ -679,6 +679,10 @@ def main():
                         help='Output directory for results')
     parser.add_argument('--reverse', action='store_true',
                         help='Evaluate models in reverse order (descending)')
+    parser.add_argument('--motion_viewer', action='store_true',
+                        help='Enable MotionServer viewer')
+    parser.add_argument('--policy_viewer', action='store_true',
+                        help='Enable PolicyController viewer')
 
     args = parser.parse_args()
 
@@ -698,7 +702,9 @@ def main():
         redis_ip=args.redis_ip,
         num_runs=args.num_runs,
         output_dir=args.output_dir,
-        reverse=args.reverse
+        reverse=args.reverse,
+        motion_viewer=args.motion_viewer,
+        policy_viewer=args.policy_viewer
     )
 
 

@@ -213,6 +213,7 @@ class MotionServer:
         # Setup viewer if needed
         self.viewer = None
         self.sim_model = mujoco.MjModel.from_xml_path(self.xml_file)
+        self.sim_data = None
         
         if self.show_viewer:
             self.sim_data = mujoco.MjData(self.sim_model)
