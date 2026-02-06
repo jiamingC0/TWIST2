@@ -9,6 +9,11 @@ import numpy as np
 
 @dataclass
 class RealTimePolicyControllerConfig:
+    """Policy controller config.
+    输入/Input: 仿真、策略、性能相关参数。
+    输出/Output: 配置对象。
+    功能/Function: 统一实时控制器参数。
+    """
     xml_file: str = "assets/g1/g1_sim2sim_29dof.xml"
     device: str = "cuda"
     record_video: bool = False
@@ -29,6 +34,11 @@ class RealTimePolicyControllerConfig:
 
 @dataclass
 class MotionServerConfig:
+    """Motion server config.
+    输入/Input: motion 播放、站立、cleanup 参数。
+    输出/Output: 配置对象。
+    功能/Function: 统一 MotionServer 参数。
+    """
     robot: str = "unitree_g1_with_hands"
     redis_ip: str = "localhost"
     steps: str = "1"

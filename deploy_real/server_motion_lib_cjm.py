@@ -283,9 +283,11 @@ class MotionServer:
             self.redis_io.client.set(self.redis_keys.T_STATE, int(time.time() * 1000))
             # Pre-stand for a fixed duration (task_id=0)
             if self.play_standing_after_motion and self.standing_motion_lib is not None and self.pre_standing_steps > 0:
+                #  预站立阶段，发送 standing 的 mimic_obs（task_id=0）
                 print(f"[MotionServer] Pre-stand for {self.pre_standing_seconds:.1f}s ({self.pre_standing_steps} steps)...")
                 self.stand_manager.pre_stand(self.pre_standing_steps, task_id=0)
 
+            #  进入正式动作播放阶段
             self.redis_io.set_motion_phase(MotionPhase.MOTION.value)
             t_step = 0
             while t_step < self.num_steps and not self.should_stop:
@@ -304,6 +306,7 @@ class MotionServer:
                         self.motion_started = True
                     elif not self.motion_started:
                         # Keep sending default pose while waiting for start signal
+                        #  等待遥控启动时，持续发送静止姿态
                         idle_mimic_obs = self.start_frame_mimic_obs if self.send_start_frame_as_end_frame and self.start_frame_mimic_obs is not None else DEFAULT_MIMIC_OBS[self.robot]
                         self.redis_io.set_action_body(self.robot, idle_mimic_obs)
                         self.redis_io.set_action_hands_neck(self.robot)
@@ -315,6 +318,7 @@ class MotionServer:
                         continue
 
                 # Build a mimic obs from the motion library
+                #  生成当前帧的 mimic_obs 并发送到 Redis
                 frame = self.motion_streamer.build_frame(t_step, task_id=self.motion_task_id)
                 mimic_obs = frame.mimic_obs
                 root_pos = frame.root_pos
@@ -363,6 +367,7 @@ class MotionServer:
             return False
         finally:
             if completed_normally:
+                #  动作完成后进入 cleanup，并在结束时发送 motion_done
                 self.stand_manager.cleanup(
                     last_mimic_obs=self.last_mimic_obs,
                     target_mimic_obs=self.start_frame_mimic_obs if self.send_start_frame_as_end_frame and self.start_frame_mimic_obs is not None else DEFAULT_MIMIC_OBS[self.robot],
@@ -371,6 +376,7 @@ class MotionServer:
                 self.redis_io.set_motion_phase(MotionPhase.DONE.value)
                 self.redis_io.set_motion_done(True)
             else:
+                #  异常退出也做 cleanup，但不发送 motion_done
                 self.stand_manager.cleanup(
                     last_mimic_obs=self.last_mimic_obs,
                     target_mimic_obs=self.start_frame_mimic_obs if self.send_start_frame_as_end_frame and self.start_frame_mimic_obs is not None else DEFAULT_MIMIC_OBS[self.robot],

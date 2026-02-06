@@ -335,6 +335,7 @@ class RealTimePolicyController:
            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
 
         # Send initial proprio to redis
+        #  初始化状态，避免 policy 读取到空值
         initial_obs = np.zeros(self.n_obs_single, dtype=np.float32)
         self.redis_io.set_state_body("unitree_g1_with_hands", initial_obs)
         self.redis_io.set_state_hands_neck("unitree_g1_with_hands")
@@ -352,7 +353,8 @@ class RealTimePolicyController:
         policy_fps_print_interval = 100
 
         start_time = time.time()
-        fall_detection_delay = self.config.fall_detection_delay  # Delay before checking for falls
+        #  启动初期延迟摔倒检测
+        fall_detection_delay = self.config.fall_detection_delay
         motion_grace_seconds = self.config.motion_grace_seconds
         saw_t_state = False
         start_time_ms = int(start_time * 1000)
@@ -418,6 +420,7 @@ class RealTimePolicyController:
                         pass
 
                 # Only enforce motion server active check after initial grace or after t_state seen.
+                #  在 grace 期内或未看到 t_state 前，不判定 motion 停止
                 if (saw_t_state or (time.time() - start_time) > motion_grace_seconds):
                     if not self.check_motion_server_active():
                         try:
@@ -437,6 +440,7 @@ class RealTimePolicyController:
 
                 if i % self.sim_decimation == 0:
                     # Build proprioceptive observation
+                    #  构建 proprio 与状态
                     rpy = quatToEuler(quat)
                     obs_proprio = self.obs_builder.build_proprio(
                         ang_vel=ang_vel,
@@ -449,6 +453,7 @@ class RealTimePolicyController:
                     state_body = self.obs_builder.build_state_body(ang_vel, rpy, dof_pos)
 
                     # Send proprio to redis
+                    #  发布当前状态到 Redis
                     self.redis_io.set_state_body("unitree_g1_with_hands", state_body)
                     self.redis_io.set_state_hands_neck("unitree_g1_with_hands")
                     self.redis_io.set_root_pos("unitree_g1_with_hands", root_pos)
@@ -456,12 +461,14 @@ class RealTimePolicyController:
                     self.redis_io.flush()
 
                     # Get mimic obs from Redis
+                    #  读取 motion 侧 action_mimic
                     action_mimic, action_left_hand, action_right_hand, action_neck = self.redis_io.get_actions("unitree_g1_with_hands")
                     if action_mimic is None:
                         continue
                     # 输出action_mimic最后一个元素
                     # print(f"Action mimic last element: {action_mimic[-1]}")
                     # Construct observation for TWIST2 controller
+                    #  构建策略输入观测
                     obs_full, obs_hist, obs_buf = self.obs_builder.build_full_obs(
                         action_mimic=np.asarray(action_mimic),
                         obs_proprio=obs_proprio,
@@ -470,6 +477,7 @@ class RealTimePolicyController:
                     self.proprio_history_buf.append(obs_full)
 
                     # Run policy
+                    #  策略前向推理
                     raw_action = self.policy_runner.infer_action(obs_buf)
 
                     if collect_metrics:
@@ -488,6 +496,7 @@ class RealTimePolicyController:
                             phase_bucket = None
 
                         root_vel_local = quat_rotate_inverse_np(quat, root_vel, scalar_first=True)
+                        #  更新评估指标（按 stand/motion 分桶）
                         metrics_recorder.update(
                             action_mimic=np.asarray(action_mimic) if action_mimic is not None else None,
                             dof_pos=dof_pos,
@@ -502,6 +511,7 @@ class RealTimePolicyController:
                         )
 
                         # If motion done flag is set, finish gracefully.
+                        #  motion_done / policy_stop 信号触发优雅退出
                         try:
                             motion_done = self.redis_io.get_motion_done()
                             if is_truthy(motion_done):
@@ -558,6 +568,7 @@ class RealTimePolicyController:
                                 fps_iteration_count = 0
                     last_policy_time = current_time
 
+                    #  动作缩放与 PD 目标
                     self.last_action = raw_action
                     scaled_actions = self.policy_runner.scale_action(raw_action)
                     pd_target = self.policy_runner.to_pd_target(scaled_actions)
@@ -587,6 +598,7 @@ class RealTimePolicyController:
                         self.proprio_recordings.append(proprio_data)
 
                     # Check for fall (after delay to avoid initialization false positives)
+                    #  延迟后开始摔倒检测
                     if (time.time() - start_time) > fall_detection_delay:
                         if self.check_fall_from_redis():
                             print("[PolicyController] Robot fell detected")

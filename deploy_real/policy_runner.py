@@ -10,12 +10,22 @@ import torch
 
 @dataclass
 class PolicyConfig:
+    """Policy config.
+    输入/Input: action_scale/default_dof_pos/clip。
+    输出/Output: 配置对象。
+    功能/Function: 统一动作缩放与裁剪参数。
+    """
     action_scale: np.ndarray
     default_dof_pos: np.ndarray
     action_clip: float = 10.0
 
 
 class PolicyRunner:
+    """Policy runner.
+    输入/Input: obs_buf。
+    输出/Output: raw_action / scaled_action / pd_target。
+    功能/Function: 推理与动作处理封装。
+    """
     def __init__(self, policy, device: str, config: PolicyConfig):
         self.policy = policy
         self.device = device

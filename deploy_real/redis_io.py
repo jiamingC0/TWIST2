@@ -14,6 +14,11 @@ from deploy_real.redis_protocol import RedisKeys
 
 @dataclass
 class RedisIO:
+    """Redis IO wrapper.
+    输入/Input: redis client/pipeline/keys.
+    输出/Output: 结构化读写接口。
+    功能/Function: 封装 Redis 读写与协议字段。
+    """
     client: redis.Redis
     pipeline: redis.client.Pipeline
     keys: RedisKeys

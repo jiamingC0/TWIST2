@@ -10,6 +10,11 @@ import numpy as np
 
 @dataclass(frozen=True)
 class ObsConfig:
+    """Observation config.
+    输入/Input: obs 维度与历史长度。
+    输出/Output: 配置对象。
+    功能/Function: 统一观测维度参数。
+    """
     n_mimic_obs: int
     n_proprio: int
     n_obs_single: int
@@ -18,6 +23,11 @@ class ObsConfig:
 
 
 class ObservationBuilder:
+    """Observation builder.
+    输入/Input: 传感状态 + action_mimic + history。
+    输出/Output: obs_full / obs_hist / obs_buf。
+    功能/Function: 构建策略输入观测并做维度校验。
+    """
     def __init__(self, config: ObsConfig, default_dof_pos: np.ndarray, ankle_idx):
         self.config = config
         self.default_dof_pos = default_dof_pos

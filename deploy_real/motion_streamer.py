@@ -12,6 +12,11 @@ from deploy_real.mimic_obs_builder import build_mimic_obs
 
 @dataclass
 class MotionFrame:
+    """Motion frame.
+    输入/Input: mimic_obs/root_pos/root_rot/dof_pos。
+    输出/Output: 单帧结构体。
+    功能/Function: 打包 motion 帧数据。
+    """
     mimic_obs: np.ndarray
     root_pos: np.ndarray
     root_rot: np.ndarray
@@ -20,6 +25,11 @@ class MotionFrame:
 
 @dataclass
 class MotionStreamer:
+    """Motion streamer.
+    输入/Input: MotionLib + t_step + task_id。
+    输出/Output: MotionFrame。
+    功能/Function: 生成指定帧的 mimic_obs 与姿态。
+    """
     motion_lib: MotionLib
     tar_motion_steps_tensor: object
     control_dt: float

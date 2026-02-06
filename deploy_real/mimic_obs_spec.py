@@ -10,6 +10,11 @@ import numpy as np
 
 @dataclass(frozen=True)
 class MimicObsSpec:
+    """Mimic obs spec.
+    输入/Input: action_mimic。
+    输出/Output: 解析后的目标字段。
+    功能/Function: 统一 action_mimic 布局解析，消除魔法索引。
+    """
     # Layout:
     # [0:2] root_vel_xy
     # [2]   root_pos_z

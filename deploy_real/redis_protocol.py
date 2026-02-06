@@ -10,6 +10,11 @@ from typing import Dict
 
 
 class MotionPhase(str, Enum):
+    """Motion phase enum.
+    输入/Input: phase string.
+    输出/Output: standard phase values.
+    功能/Function: 统一 motion 阶段标记。
+    """
     PRE_STAND = "pre_stand"
     MOTION = "motion"
     CLEANUP = "cleanup"
@@ -18,6 +23,11 @@ class MotionPhase(str, Enum):
 
 @dataclass(frozen=True)
 class RedisKeys:
+    """Redis key templates.
+    输入/Input: robot name for format().
+    输出/Output: formatted Redis keys.
+    功能/Function: 统一 Redis key 命名，避免散落字符串。
+    """
     # Motion status keys
     T_STATE: str = "t_state"
     MOTION_PHASE: str = "motion_phase"

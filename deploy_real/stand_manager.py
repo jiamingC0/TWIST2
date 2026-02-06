@@ -14,6 +14,11 @@ from deploy_real.motion_streamer import MotionStreamer
 
 @dataclass
 class StandManager:
+    """Stand manager.
+    输入/Input: stand 时长、task_id、mimic_obs。
+    输出/Output: 站立阶段的 Redis 指令流。
+    功能/Function: 统一 pre-stand 与 cleanup 时序逻辑。
+    """
     redis_io: RedisIO
     motion_streamer: MotionStreamer
     robot: str

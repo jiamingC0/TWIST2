@@ -69,6 +69,11 @@ class _Bucket:
 
 @dataclass
 class MetricsRecorder:
+    """Metrics recorder.
+    输入/Input: 单步状态与 action_mimic。
+    输出/Output: total/stand/motion 三类指标。
+    功能/Function: 采样并统计评估指标。
+    """
     total: _Bucket = field(default_factory=_Bucket)
     stand: _Bucket = field(default_factory=_Bucket)
     motion: _Bucket = field(default_factory=_Bucket)
