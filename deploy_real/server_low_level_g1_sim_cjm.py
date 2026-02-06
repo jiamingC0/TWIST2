@@ -13,6 +13,7 @@ import os
 from data_utils.rot_utils import quatToEuler, quat_rotate_inverse_np
 from deploy_real.redis_protocol import RedisKeys, motion_phase_is_stand, is_truthy, normalize_motion_phase
 from deploy_real.metrics_recorder import MetricsRecorder
+from deploy_real.obs_builder import ObservationBuilder, ObsConfig
 
 try:
     import onnxruntime as ort
@@ -181,6 +182,18 @@ class RealTimePolicyController:
         self.proprio_history_buf = deque(maxlen=self.history_len)
         for _ in range(self.history_len):
             self.proprio_history_buf.append(np.zeros(self.n_obs_single, dtype=np.float32))
+
+        self.obs_builder = ObservationBuilder(
+            ObsConfig(
+                n_mimic_obs=self.n_mimic_obs,
+                n_proprio=self.n_proprio,
+                n_obs_single=self.n_obs_single,
+                history_len=self.history_len,
+                total_obs_size=self.total_obs_size,
+            ),
+            default_dof_pos=self.default_dof_pos,
+            ankle_idx=self.ankle_idx,
+        )
 
         # Recording
         self.record_video = record_video
@@ -393,20 +406,15 @@ class RealTimePolicyController:
                 if i % self.sim_decimation == 0:
                     # Build proprioceptive observation
                     rpy = quatToEuler(quat)
-                    obs_body_dof_vel = dof_vel.copy()
-                    obs_body_dof_vel[self.ankle_idx] = 0.
-                    obs_proprio = np.concatenate([
-                        ang_vel * 0.25,
-                        rpy[:2], # only use roll and pitch
-                        (dof_pos - self.default_dof_pos),
-                        obs_body_dof_vel * 0.05,
-                        self.last_action
-                    ])
+                    obs_proprio = self.obs_builder.build_proprio(
+                        ang_vel=ang_vel,
+                        rpy=rpy,
+                        dof_pos=dof_pos,
+                        dof_vel=dof_vel,
+                        last_action=self.last_action,
+                    )
 
-                    state_body = np.concatenate([
-                        ang_vel,
-                        rpy[:2],
-                        dof_pos]) # 3+2+29 = 34 dims
+                    state_body = self.obs_builder.build_state_body(ang_vel, rpy, dof_pos)
 
                     # Send proprio to redis
                     self.redis_pipeline.set(self.redis_keys.format(self.redis_keys.STATE_BODY, "unitree_g1_with_hands"), json.dumps(state_body.tolist()))
@@ -434,17 +442,12 @@ class RealTimePolicyController:
                     # 输出action_mimic最后一个元素
                     # print(f"Action mimic last element: {action_mimic[-1]}")
                     # Construct observation for TWIST2 controller
-                    obs_full = np.concatenate([action_mimic, obs_proprio])
-                    # Update history
-                    obs_hist = np.array(self.proprio_history_buf).flatten()
+                    obs_full, obs_hist, obs_buf = self.obs_builder.build_full_obs(
+                        action_mimic=np.asarray(action_mimic),
+                        obs_proprio=obs_proprio,
+                        history_buf=self.proprio_history_buf,
+                    )
                     self.proprio_history_buf.append(obs_full)
-                    future_obs = action_mimic.copy()
-                    # Combine all observations: current + history + future (set to current frame for now)
-                    obs_buf = np.concatenate([obs_full, obs_hist, future_obs])
-
-
-                    # Ensure correct total observation size
-                    assert obs_buf.shape[0] == self.total_obs_size, f"Expected {self.total_obs_size} obs, got {obs_buf.shape[0]}"
 
                     # Run policy
                     obs_tensor = torch.from_numpy(obs_buf).float().unsqueeze(0).to(self.device)
