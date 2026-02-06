@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional
 import numpy as np
 
+from deploy_real.mimic_obs_spec import MimicObsSpec
+
 
 @dataclass
 class _Bucket:
@@ -71,6 +73,7 @@ class MetricsRecorder:
     stand: _Bucket = field(default_factory=_Bucket)
     motion: _Bucket = field(default_factory=_Bucket)
     last_action: Optional[np.ndarray] = None
+    spec: MimicObsSpec = field(default_factory=MimicObsSpec)
 
     def update(self,
                *,
@@ -97,8 +100,9 @@ class MetricsRecorder:
         if bucket is not None:
             bucket.steps += 1
 
-        if action_mimic is not None and len(action_mimic) >= 6 + 29:
-            target_dof = np.asarray(action_mimic[6:6 + 29], dtype=np.float32)
+        parsed = self.spec.parse(action_mimic) if action_mimic is not None else None
+        if parsed is not None:
+            target_dof = parsed["dof_pos"]
             dof_err = np.abs(dof_pos - target_dof).mean()
             self.total.tracking_dof_abs_sum += float(dof_err)
             self.total.tracking_dof_sq_sum += float(dof_err ** 2)
@@ -106,10 +110,10 @@ class MetricsRecorder:
                 bucket.tracking_dof_abs_sum += float(dof_err)
                 bucket.tracking_dof_sq_sum += float(dof_err ** 2)
 
-            target_root_pos_z = float(action_mimic[2])
-            target_roll = float(action_mimic[3])
-            target_pitch = float(action_mimic[4])
-            target_yaw_ang_vel = float(action_mimic[5])
+            target_root_pos_z = parsed["root_pos_z"]
+            target_roll = parsed["roll"]
+            target_pitch = parsed["pitch"]
+            target_yaw_ang_vel = parsed["yaw_ang_vel"]
             self.total.root_pos_z_abs_sum += float(abs(root_pos[2] - target_root_pos_z))
             self.total.roll_pitch_abs_sum += float(
                 0.5 * (abs(rpy[0] - target_roll) + abs(rpy[1] - target_pitch))
@@ -122,7 +126,7 @@ class MetricsRecorder:
                 )
                 bucket.yaw_ang_vel_abs_sum += float(abs(ang_vel[2] - target_yaw_ang_vel))
 
-            root_vel_xy_err = np.linalg.norm(root_vel_local[:2] - np.asarray(action_mimic[0:2], dtype=np.float32))
+            root_vel_xy_err = np.linalg.norm(root_vel_local[:2] - parsed["root_vel_xy"])
             self.total.root_vel_xy_l2_sum += float(root_vel_xy_err)
             if bucket is not None:
                 bucket.root_vel_xy_l2_sum += float(root_vel_xy_err)
