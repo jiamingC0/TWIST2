@@ -16,6 +16,7 @@ from data_utils.rot_utils import euler_from_quaternion_torch, quat_rotate_invers
 
 from data_utils.params import DEFAULT_MIMIC_OBS
 from deploy_real.redis_protocol import RedisKeys, MotionPhase
+from deploy_real.redis_io import RedisIO
 
 
 def build_mimic_obs(
@@ -141,6 +142,7 @@ class MotionServer:
         self.redis_client = redis.Redis(host=self.redis_ip, port=6379, db=0)
         self.redis_client.ping()
         self.redis_keys = RedisKeys()
+        self.redis_io = RedisIO.connect(host=self.redis_ip, port=6379, db=0)
 
         # Load motion library
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -203,8 +205,8 @@ class MotionServer:
 
         if self.use_remote_control:
             # Reset start and exit signal to 0
-            self.redis_client.set("motion_start_signal", "0")
-            self.redis_client.set("motion_exit_signal", "0")
+            self.redis_io.set_value("motion_start_signal", "0")
+            self.redis_io.set_value("motion_exit_signal", "0")
 
     def stop(self):
         """Signal the server to stop."""
@@ -216,11 +218,11 @@ class MotionServer:
 
         try:
             # Check for start signal (B button from robot controller)
-            start_signal = self.redis_client.get("motion_start_signal")
+            start_signal = self.redis_io.get_value("motion_start_signal")
             start_pressed = start_signal == b"1" if start_signal else False
 
             # Check for exit signal (Select button from robot controller)
-            exit_signal = self.redis_client.get("motion_exit_signal")
+            exit_signal = self.redis_io.get_value("motion_exit_signal")
             exit_pressed = exit_signal == b"1" if exit_signal else False
 
             return start_pressed, exit_pressed
@@ -234,10 +236,10 @@ class MotionServer:
         completed_normally = False
         try:
             # Reset motion status flags
-            self.redis_client.set(self.redis_keys.MOTION_DONE, 0)
-            self.redis_client.set(self.redis_keys.MOTION_PHASE, MotionPhase.PRE_STAND.value)
+            self.redis_io.set_motion_done(False)
+            self.redis_io.set_motion_phase(MotionPhase.PRE_STAND.value)
             # Emit an initial heartbeat so policy controller won't treat us as stopped.
-            self.redis_client.set(self.redis_keys.T_STATE, int(time.time() * 1000))
+            self.redis_io.client.set(self.redis_keys.T_STATE, int(time.time() * 1000))
             # Pre-stand for a fixed duration (task_id=0)
             if self.play_standing_after_motion and self.standing_motion_lib is not None and self.pre_standing_steps > 0:
                 print(f"[MotionServer] Pre-stand for {self.pre_standing_seconds:.1f}s ({self.pre_standing_steps} steps)...")
@@ -254,12 +256,10 @@ class MotionServer:
                         task_id=0
                     )
                     mimic_obs_list = standing_mimic_obs.tolist() if standing_mimic_obs.ndim == 1 else standing_mimic_obs.flatten().tolist()
-                    self.redis_client.set(self.redis_keys.format(self.redis_keys.ACTION_BODY, self.robot), json.dumps(mimic_obs_list))
-                    self.redis_client.set(self.redis_keys.format(self.redis_keys.ACTION_HAND_LEFT, self.robot), json.dumps(np.zeros(7).tolist()))
-                    self.redis_client.set(self.redis_keys.format(self.redis_keys.ACTION_HAND_RIGHT, self.robot), json.dumps(np.zeros(7).tolist()))
-                    self.redis_client.set(self.redis_keys.format(self.redis_keys.ACTION_NECK, self.robot), json.dumps(np.zeros(2).tolist()))
-                    self.redis_client.set(self.redis_keys.T_STATE, int(time.time() * 1000))
-                    self.redis_client.set(self.redis_keys.MOTION_PHASE, MotionPhase.PRE_STAND.value)
+                    self.redis_io.set_action_body(self.robot, np.asarray(mimic_obs_list, dtype=np.float32))
+                    self.redis_io.set_action_hands_neck(self.robot)
+                    self.redis_io.client.set(self.redis_keys.T_STATE, int(time.time() * 1000))
+                    self.redis_io.set_motion_phase(MotionPhase.PRE_STAND.value)
                     self.last_mimic_obs = standing_mimic_obs
 
                     if self.show_viewer:
@@ -278,7 +278,7 @@ class MotionServer:
                     if elapsed < self.control_dt:
                         time.sleep(self.control_dt - elapsed)
 
-            self.redis_client.set(self.redis_keys.MOTION_PHASE, MotionPhase.MOTION.value)
+            self.redis_io.set_motion_phase(MotionPhase.MOTION.value)
             t_step = 0
             while t_step < self.num_steps and not self.should_stop:
                 t0 = time.time()
@@ -297,9 +297,8 @@ class MotionServer:
                     elif not self.motion_started:
                         # Keep sending default pose while waiting for start signal
                         idle_mimic_obs = self.start_frame_mimic_obs if self.send_start_frame_as_end_frame and self.start_frame_mimic_obs is not None else DEFAULT_MIMIC_OBS[self.robot]
-                        self.redis_client.set(self.redis_keys.format(self.redis_keys.ACTION_BODY, self.robot), json.dumps(idle_mimic_obs.tolist()))
-                        self.redis_client.set(self.redis_keys.format(self.redis_keys.ACTION_HAND_LEFT, self.robot), json.dumps(np.zeros(7).tolist()))
-                        self.redis_client.set(self.redis_keys.format(self.redis_keys.ACTION_HAND_RIGHT, self.robot), json.dumps(np.zeros(7).tolist()))
+                        self.redis_io.set_action_body(self.robot, idle_mimic_obs)
+                        self.redis_io.set_action_hands_neck(self.robot)
 
                         # Sleep and continue to next iteration
                         elapsed = time.time() - t0
@@ -319,12 +318,10 @@ class MotionServer:
                 )
                 # Convert to JSON (list) to put into Redis
                 mimic_obs_list = mimic_obs.tolist() if mimic_obs.ndim == 1 else mimic_obs.flatten().tolist()
-                self.redis_client.set(self.redis_keys.format(self.redis_keys.ACTION_BODY, self.robot), json.dumps(mimic_obs_list))
-                self.redis_client.set(self.redis_keys.format(self.redis_keys.ACTION_HAND_LEFT, self.robot), json.dumps(np.zeros(7).tolist()))
-                self.redis_client.set(self.redis_keys.format(self.redis_keys.ACTION_HAND_RIGHT, self.robot), json.dumps(np.zeros(7).tolist()))
-                self.redis_client.set(self.redis_keys.format(self.redis_keys.ACTION_NECK, self.robot), json.dumps(np.zeros(2).tolist()))
-                self.redis_client.set(self.redis_keys.T_STATE, int(time.time() * 1000))  # current timestamp in ms
-                self.redis_client.set(self.redis_keys.MOTION_PHASE, MotionPhase.MOTION.value)
+                self.redis_io.set_action_body(self.robot, np.asarray(mimic_obs_list, dtype=np.float32))
+                self.redis_io.set_action_hands_neck(self.robot)
+                self.redis_io.client.set(self.redis_keys.T_STATE, int(time.time() * 1000))  # current timestamp in ms
+                self.redis_io.set_motion_phase(MotionPhase.MOTION.value)
                 self.last_mimic_obs = mimic_obs
 
                 # Print or log it
@@ -365,8 +362,8 @@ class MotionServer:
         finally:
             if completed_normally:
                 self.cleanup(time_back_to_default=5.0)
-                self.redis_client.set(self.redis_keys.MOTION_PHASE, MotionPhase.DONE.value)
-                self.redis_client.set(self.redis_keys.MOTION_DONE, 1)
+                self.redis_io.set_motion_phase(MotionPhase.DONE.value)
+                self.redis_io.set_motion_done(True)
             else:
                 self.cleanup(time_back_to_default=5.0)
 
@@ -376,10 +373,10 @@ class MotionServer:
         target_mimic_obs = self.start_frame_mimic_obs if self.send_start_frame_as_end_frame and self.start_frame_mimic_obs is not None else DEFAULT_MIMIC_OBS[self.robot]
         for i in range(int(time_back_to_default / self.control_dt)):
             interp_mimic_obs = self.last_mimic_obs + (target_mimic_obs - self.last_mimic_obs) * (i / (time_back_to_default / self.control_dt))
-            self.redis_client.set(self.redis_keys.format(self.redis_keys.ACTION_BODY, self.robot), json.dumps(interp_mimic_obs.tolist()))
-            self.redis_client.set(self.redis_keys.MOTION_PHASE, MotionPhase.CLEANUP.value)
+            self.redis_io.set_action_body(self.robot, interp_mimic_obs)
+            self.redis_io.set_motion_phase(MotionPhase.CLEANUP.value)
             time.sleep(self.control_dt)
-        self.redis_client.set(self.redis_keys.format(self.redis_keys.ACTION_BODY, self.robot), json.dumps(target_mimic_obs.tolist()))
+        self.redis_io.set_action_body(self.robot, target_mimic_obs)
 
         if self.viewer:
             self.viewer.close()

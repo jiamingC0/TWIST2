@@ -19,6 +19,7 @@ from termcolor import cprint
 from collections import defaultdict
 import pickle
 from tqdm import tqdm
+from deploy_real.redis_io import RedisIO
 
 
 # Set multiprocessing start method early (must be before creating any processes)
@@ -103,11 +104,10 @@ def _policy_controller_wrapper(queue, args):
     )
     # Wait until motion server starts streaming (t_state appears).
     try:
-        import redis
-        redis_client = redis.Redis(host='localhost', port=6379, db=0)
+        redis_io = RedisIO.connect(host='localhost', port=6379, db=0)
         start_wait = time.time()
         while True:
-            t_state = redis_client.get("t_state")
+            t_state = redis_io.get_t_state()
             if t_state:
                 break
             if time.time() - start_wait > 10.0:
@@ -149,16 +149,12 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
             timed_out = False
 
             # Clear stale heartbeat/flags so policy doesn't see old state.
-            redis_client = None
+            redis_io = None
             try:
-                import redis
-                redis_client = redis.Redis(host=redis_ip, port=6379, db=0)
-                redis_client.delete("t_state")
-                redis_client.delete("motion_done")
-                redis_client.delete("motion_phase")
-                redis_client.delete("policy_stop")
+                redis_io = RedisIO.connect(host=redis_ip, port=6379, db=0)
+                redis_io.clear_flags()
             except Exception as e:
-                cprint(f"Warning: failed to clear t_state before run: {e}", "yellow")
+                cprint(f"Warning: failed to clear redis flags before run: {e}", "yellow")
 
             # Start motion server subprocess
             motion_queue = mp.Queue()
@@ -194,8 +190,8 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
                     completed = True
                     cprint(f"    Motion server completed", "green")
                     try:
-                        if redis_client is not None:
-                            redis_client.set("policy_stop", 1)
+                        if redis_io is not None:
+                            redis_io.set_policy_stop(True)
                     except Exception:
                         pass
                     motion_completed = True
@@ -209,8 +205,8 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
                         cprint(f"    Policy controller stopped (waiting for motion)...", "yellow")
                         policy_stop_logged = True
                     try:
-                        if redis_client is not None:
-                            motion_done = redis_client.get("motion_done")
+                        if redis_io is not None:
+                            motion_done = redis_io.get_motion_done()
                             if motion_done and motion_done in (b"1", b"true", b"True"):
                                 motion_done_flag = True
                     except Exception:

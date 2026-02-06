@@ -12,6 +12,7 @@ from tqdm import tqdm
 import os
 from data_utils.rot_utils import quatToEuler, quat_rotate_inverse_np
 from deploy_real.redis_protocol import RedisKeys, motion_phase_is_stand, is_truthy, normalize_motion_phase
+from deploy_real.redis_io import RedisIO
 from deploy_real.metrics_recorder import MetricsRecorder
 from deploy_real.obs_builder import ObservationBuilder, ObsConfig
 
@@ -77,8 +78,9 @@ class RealTimePolicyController:
 
         self.redis_client = None
         try:
-            self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
-            self.redis_pipeline = self.redis_client.pipeline()
+            self.redis_io = RedisIO.connect(host='localhost', port=6379, db=0)
+            self.redis_client = self.redis_io.client
+            self.redis_pipeline = self.redis_io.pipeline
         except Exception as e:
             print(f"Error connecting to Redis: {e}")
         self.redis_keys = RedisKeys()
@@ -232,10 +234,10 @@ class RealTimePolicyController:
         """Check for fall signal from Redis by reading robot state."""
         try:
             # Read robot state from Redis
-            state_body_json = self.redis_client.get(self.redis_keys.format(self.redis_keys.STATE_BODY, "unitree_g1_with_hands"))
+            state_body_json = self.redis_io.get_state_body("unitree_g1_with_hands")
             if not state_body_json:
                 return False
-            state_body = json.loads(state_body_json)
+            state_body = state_body_json
             # state_body format: [ang_vel (3), roll_pitch (2), dof_pos (29)] = 34 dims
             # ang_vel indices: 0-2, roll_pitch indices: 3-4
             roll = state_body[3]
@@ -246,14 +248,14 @@ class RealTimePolicyController:
 
             # Check height fall: root position z < 0.4m
             height_fall = False
-            root_pos_json = self.redis_client.get(self.redis_keys.format(self.redis_keys.ROOT_POS, "unitree_g1_with_hands"))
+            root_pos_json = self.redis_io.get_root_pos("unitree_g1_with_hands")
             if root_pos_json:
-                root_pos = json.loads(root_pos_json)
+                root_pos = root_pos_json
                 root_height = root_pos[2]  # z-axis
                 height_fall = root_height < 0.4  # 40cm threshold
 
             if not height_fall and orientation_fall:
-                root_height = json.loads(root_pos_json)[2] if root_pos_json else 0
+                root_height = root_pos_json[2] if root_pos_json else 0
                 print(f"[PolicyController] Fall detected: roll={roll:.2f}, pitch={pitch:.2f}, root_height={root_height:.2f}")
 
             return height_fall or orientation_fall
@@ -264,7 +266,7 @@ class RealTimePolicyController:
         """Check if motion server is still active by checking Redis updates."""
         try:
             # Check timestamp
-            t_state = self.redis_client.get(self.redis_keys.T_STATE)
+            t_state = self.redis_io.get_t_state()
             if t_state:
                 t_state_ms = int(t_state)
                 current_ms = int(time.time() * 1000)
@@ -303,10 +305,9 @@ class RealTimePolicyController:
 
         # Send initial proprio to redis
         initial_obs = np.zeros(self.n_obs_single, dtype=np.float32)
-        self.redis_pipeline.set(self.redis_keys.format(self.redis_keys.STATE_BODY, "unitree_g1_with_hands"), json.dumps(initial_obs.tolist()))
-        self.redis_pipeline.set(self.redis_keys.format(self.redis_keys.STATE_HAND_LEFT, "unitree_g1_with_hands"), json.dumps(np.zeros(7).tolist()))
-        self.redis_pipeline.set(self.redis_keys.format(self.redis_keys.STATE_HAND_RIGHT, "unitree_g1_with_hands"), json.dumps(np.zeros(7).tolist()))
-        self.redis_pipeline.execute()
+        self.redis_io.set_state_body("unitree_g1_with_hands", initial_obs)
+        self.redis_io.set_state_hands_neck("unitree_g1_with_hands")
+        self.redis_io.flush()
 
         measure_fps = self.measure_fps
         fps_measurements = []
@@ -377,7 +378,7 @@ class RealTimePolicyController:
                 # Check if motion server is still active
                 if not saw_t_state:
                     try:
-                        t_state = self.redis_client.get(self.redis_keys.T_STATE)
+                        t_state = self.redis_io.get_t_state()
                         if t_state:
                             t_state_ms = int(t_state)
                             if t_state_ms >= start_time_ms:
@@ -417,28 +418,16 @@ class RealTimePolicyController:
                     state_body = self.obs_builder.build_state_body(ang_vel, rpy, dof_pos)
 
                     # Send proprio to redis
-                    self.redis_pipeline.set(self.redis_keys.format(self.redis_keys.STATE_BODY, "unitree_g1_with_hands"), json.dumps(state_body.tolist()))
-                    self.redis_pipeline.set(self.redis_keys.format(self.redis_keys.STATE_HAND_LEFT, "unitree_g1_with_hands"), json.dumps(np.zeros(7).tolist()))
-                    self.redis_pipeline.set(self.redis_keys.format(self.redis_keys.STATE_HAND_RIGHT, "unitree_g1_with_hands"), json.dumps(np.zeros(7).tolist()))
-                    self.redis_pipeline.set(self.redis_keys.format(self.redis_keys.STATE_NECK, "unitree_g1_with_hands"), json.dumps(np.zeros(2).tolist()))
-                    self.redis_pipeline.set(self.redis_keys.format(self.redis_keys.ROOT_POS, "unitree_g1_with_hands"), json.dumps(root_pos.tolist()))
-                    self.redis_pipeline.set(self.redis_keys.T_STATE, int(time.time() * 1000)) # current timestamp in ms
-                    self.redis_pipeline.execute()
+                    self.redis_io.set_state_body("unitree_g1_with_hands", state_body)
+                    self.redis_io.set_state_hands_neck("unitree_g1_with_hands")
+                    self.redis_io.set_root_pos("unitree_g1_with_hands", root_pos)
+                    self.redis_io.set_t_state()
+                    self.redis_io.flush()
 
                     # Get mimic obs from Redis
-                    keys = [
-                        self.redis_keys.format(self.redis_keys.ACTION_BODY, "unitree_g1_with_hands"),
-                        self.redis_keys.format(self.redis_keys.ACTION_HAND_LEFT, "unitree_g1_with_hands"),
-                        self.redis_keys.format(self.redis_keys.ACTION_HAND_RIGHT, "unitree_g1_with_hands"),
-                        self.redis_keys.format(self.redis_keys.ACTION_NECK, "unitree_g1_with_hands"),
-                    ]
-                    for key in keys:
-                        self.redis_pipeline.get(key)
-                    redis_results = self.redis_pipeline.execute()
-                    action_mimic = json.loads(redis_results[0])
-                    action_left_hand = json.loads(redis_results[1])
-                    action_right_hand = json.loads(redis_results[2])
-                    action_neck = json.loads(redis_results[3])
+                    action_mimic, action_left_hand, action_right_hand, action_neck = self.redis_io.get_actions("unitree_g1_with_hands")
+                    if action_mimic is None:
+                        continue
                     # 输出action_mimic最后一个元素
                     # print(f"Action mimic last element: {action_mimic[-1]}")
                     # Construct observation for TWIST2 controller
@@ -458,7 +447,7 @@ class RealTimePolicyController:
                         # Read motion phase for segmented metrics
                         phase_raw = None
                         try:
-                            phase_raw = self.redis_client.get(self.redis_keys.MOTION_PHASE)
+                            phase_raw = self.redis_io.get_motion_phase()
                         except Exception:
                             phase_raw = None
                         phase_raw = normalize_motion_phase(phase_raw)
@@ -485,14 +474,14 @@ class RealTimePolicyController:
 
                         # If motion done flag is set, finish gracefully.
                         try:
-                            motion_done = self.redis_client.get(self.redis_keys.MOTION_DONE)
+                            motion_done = self.redis_io.get_motion_done()
                             if is_truthy(motion_done):
                                 print("[PolicyController] Motion done signal received")
                                 return _format_result('motion_done')
                         except Exception:
                             pass
                         try:
-                            policy_stop = self.redis_client.get(self.redis_keys.POLICY_STOP)
+                            policy_stop = self.redis_io.get_policy_stop()
                             if is_truthy(policy_stop):
                                 print("[PolicyController] Policy stop signal received")
                                 return _format_result('policy_stop')
