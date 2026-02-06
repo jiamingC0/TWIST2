@@ -15,7 +15,7 @@ redis_ip="localhost"
 
 
 # Run the motion server
-python server_motion_lib.py \
+python server_motion_lib_cjm.py \
     --motion_file ${motion_file} \
     --robot unitree_g1_with_hands \
     --vis \

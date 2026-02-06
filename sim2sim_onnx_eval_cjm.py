@@ -101,7 +101,22 @@ def _policy_controller_wrapper(queue, args):
         policy_frequency=100,
         show_viewer=True
     )
-    result = policy_controller.run(timeout=timeout)
+    # Wait until motion server starts streaming (t_state appears).
+    try:
+        import redis
+        redis_client = redis.Redis(host='localhost', port=6379, db=0)
+        start_wait = time.time()
+        while True:
+            t_state = redis_client.get("t_state")
+            if t_state:
+                break
+            if time.time() - start_wait > 10.0:
+                cprint("Warning: t_state not found within 10s, starting policy anyway.", "yellow")
+                break
+            time.sleep(0.05)
+    except Exception as e:
+        cprint(f"Warning: failed to wait for t_state: {e}", "yellow")
+    result = policy_controller.run(timeout=timeout, collect_metrics=True)
     queue.put(('policy', result))
 
 
@@ -117,8 +132,8 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
     # Get motion duration from pkl file
     
     play_standing_after_motion = True
-    #设置延长的时间 5s 或者 0s
-    extend_time = 5.0 if play_standing_after_motion else 0.0
+    #设置延长的时间 10s (pre 5s + post 5s) 或者 0s
+    extend_time = 10.0 if play_standing_after_motion else 0.0
     motion_duration = float(motion_length) + extend_time
     cprint(f"Motion duration: {motion_duration:.2f} seconds", "cyan")
 
@@ -129,7 +144,21 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
         for run in range(num_runs):
             cprint(f"\n  Run {run+1}/{num_runs}...", "yellow")
 
-            timeout = motion_duration + 5.0
+            # Use a large timeout to avoid wall-clock affecting evaluation quality.
+            timeout = motion_duration * 5.0 + 30.0
+            timed_out = False
+
+            # Clear stale heartbeat/flags so policy doesn't see old state.
+            redis_client = None
+            try:
+                import redis
+                redis_client = redis.Redis(host=redis_ip, port=6379, db=0)
+                redis_client.delete("t_state")
+                redis_client.delete("motion_done")
+                redis_client.delete("motion_phase")
+                redis_client.delete("policy_stop")
+            except Exception as e:
+                cprint(f"Warning: failed to clear t_state before run: {e}", "yellow")
 
             # Start motion server subprocess
             motion_queue = mp.Queue()
@@ -148,44 +177,99 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
                 args=(policy_queue, (onnx_file, timeout))
             )
             policy_process.start()
-            
-            
 
             # Monitor processes
             start_time = time.time()
             completed = False
             fell = False
+            policy_stopped_early = False
+            policy_stop_logged = False
+            motion_done_flag = False
 
+            motion_completed = False
+            motion_completed_time = None
             while time.time() - start_time < timeout:
                 # Check if motion process finished
                 if not motion_process.is_alive():
                     completed = True
                     cprint(f"    Motion server completed", "green")
+                    try:
+                        if redis_client is not None:
+                            redis_client.set("policy_stop", 1)
+                    except Exception:
+                        pass
+                    motion_completed = True
+                    motion_completed_time = time.time()
                     break
 
                 # Check if policy process finished
                 if not policy_process.is_alive():
-                    completed = True
-                    cprint(f"    Policy controller stopped", "yellow")
-                    break
+                    policy_stopped_early = True
+                    if not policy_stop_logged:
+                        cprint(f"    Policy controller stopped (waiting for motion)...", "yellow")
+                        policy_stop_logged = True
+                    try:
+                        if redis_client is not None:
+                            motion_done = redis_client.get("motion_done")
+                            if motion_done and motion_done in (b"1", b"true", b"True"):
+                                motion_done_flag = True
+                    except Exception:
+                        pass
+                    # If policy stops and motion is not done, end motion to match spec.
+                    if not motion_done_flag:
+                        break
 
                 time.sleep(0.1)
+            else:
+                timed_out = True
+
+            # If motion completed, give policy a short grace to report metrics.
+            if motion_completed and policy_process.is_alive():
+                grace_start = time.time()
+                grace_seconds = 3.0
+                while time.time() - grace_start < grace_seconds:
+                    if not policy_process.is_alive():
+                        break
+                    time.sleep(0.05)
 
             # Terminate processes if still running
+            motion_timeout = False
+            policy_timeout = False
+            policy_killed_after_motion = False
             if motion_process.is_alive():
-                cprint(f"    Terminating motion server (timeout)...", "yellow")
-                motion_process.terminate()
-                motion_process.join(timeout=2)
-                if motion_process.is_alive():
-                    motion_process.kill()
+                if timed_out:
+                    cprint(f"    Terminating motion server (timeout)...", "yellow")
+                    motion_timeout = True
+                    motion_process.terminate()
                     motion_process.join(timeout=2)
+                    if motion_process.is_alive():
+                        motion_process.kill()
+                        motion_process.join(timeout=2)
+                elif policy_stopped_early and not motion_done_flag:
+                    cprint(f"    Terminating motion server (policy stopped)...", "yellow")
+                    motion_timeout = True
+                    motion_process.terminate()
+                    motion_process.join(timeout=2)
+                    if motion_process.is_alive():
+                        motion_process.kill()
+                        motion_process.join(timeout=2)
             if policy_process.is_alive():
-                cprint(f"    Terminating policy controller (timeout)...", "yellow")
-                policy_process.terminate()
-                policy_process.join(timeout=2)
-                if policy_process.is_alive():
-                    policy_process.kill()
+                if timed_out:
+                    cprint(f"    Terminating policy controller (timeout)...", "yellow")
+                    policy_timeout = True
+                    policy_process.terminate()
                     policy_process.join(timeout=2)
+                    if policy_process.is_alive():
+                        policy_process.kill()
+                        policy_process.join(timeout=2)
+                elif completed:
+                    cprint(f"    Terminating policy controller (after motion completed)...", "yellow")
+                    policy_killed_after_motion = True
+                    policy_process.terminate()
+                    policy_process.join(timeout=2)
+                    if policy_process.is_alive():
+                        policy_process.kill()
+                        policy_process.join(timeout=2)
 
             # Get results from queues (if any)
             motion_result = None
@@ -198,24 +282,166 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
                 policy_result = policy_queue.get(timeout=0.1)
             except:
                 pass
+            cprint(f"    Motion exitcode: {motion_process.exitcode}", "cyan")
+            cprint(f"    Policy exitcode: {policy_process.exitcode}", "cyan")
+
+            # Parse policy and motion results
+            policy_status = None
+            policy_metrics = None
+            policy_steps = 0
+            policy_elapsed_time = None
+            policy_sim_time = None
+            policy_fell_time = None
+            if policy_result:
+                policy_payload = policy_result[1]
+                if isinstance(policy_payload, dict):
+                    policy_status = policy_payload.get("status")
+                    policy_metrics = {
+                        "total": policy_payload.get("metrics_total"),
+                        "stand": policy_payload.get("metrics_stand"),
+                        "motion": policy_payload.get("metrics_motion"),
+                    }
+                    policy_steps = int(policy_payload.get("steps", 0))
+                    policy_elapsed_time = policy_payload.get("elapsed_time")
+                    policy_sim_time = policy_payload.get("sim_time")
+                    policy_fell_time = policy_payload.get("fell_time")
+                else:
+                    policy_status = policy_payload
+            else:
+                if policy_timeout:
+                    policy_status = "killed_timeout"
+                elif policy_killed_after_motion:
+                    policy_status = "killed_after_motion"
+                else:
+                    exitcode = policy_process.exitcode
+                    if exitcode is None:
+                        policy_status = "no_result"
+                    elif exitcode == 0:
+                        policy_status = "exited_no_result"
+                    else:
+                        policy_status = f"exitcode_{exitcode}"
+
+            motion_status = None
+            if motion_result:
+                motion_payload = motion_result[1]
+                if isinstance(motion_payload, str):
+                    motion_status = motion_payload
+                elif isinstance(motion_payload, bool):
+                    motion_status = "completed" if motion_payload else "stopped"
+                else:
+                    motion_status = "unknown"
+            else:
+                if motion_timeout:
+                    motion_status = "killed_timeout"
+                else:
+                    exitcode = motion_process.exitcode
+                    if exitcode is None:
+                        motion_status = "no_result"
+                    elif exitcode == 0:
+                        motion_status = "exited_no_result"
+                    else:
+                        motion_status = f"exitcode_{exitcode}"
 
             # Check for fall based on policy result
-            if policy_result and policy_result[1] == 'fell':
+            if policy_status == 'fell':
                 fell = True
                 cprint(f"    Robot fell detected", "red")
+
+            run_duration = time.time() - start_time
+            completion_ratio = run_duration / motion_duration if motion_duration > 0 else 0.0
+            if motion_status == "completed":
+                completion_ratio = 1.0
+            elif completion_ratio > 1.0:
+                completion_ratio = 1.0
+
+            # Success is primarily defined by motion completion and no fall.
+            completed = (
+                motion_status == "completed"
+                and not fell
+                and completion_ratio >= 0.98
+            )
+
+            failure_reason = None
+            incomplete_details = []
+            if not completed:
+                if policy_status in ("fell", "timeout", "motion_server_stopped", "stopped", "error"):
+                    failure_reason = policy_status
+                elif motion_status and motion_status != "completed":
+                    failure_reason = f"motion_{motion_status}"
+                else:
+                    failure_reason = "incomplete"
+
+                if policy_status != "completed":
+                    incomplete_details.append(f"policy_status={policy_status}")
+                if motion_status != "completed":
+                    incomplete_details.append(f"motion_status={motion_status}")
+                if completion_ratio < 0.98:
+                    incomplete_details.append(f"completion_ratio={completion_ratio:.3f}<0.98")
 
             result = {
                 'run': run + 1,
                 'completed': completed,
                 'fell': fell,
-                'duration': time.time() - start_time
+                'duration': run_duration,
+                'completion_ratio': completion_ratio,
+                'motion_file': motion_file,
+                'motion_duration': motion_duration,
+                'policy_status': policy_status,
+                'motion_status': motion_status,
+                'failure_reason': failure_reason,
+                'incomplete_details': incomplete_details,
+                'policy_steps': policy_steps,
+                'policy_elapsed_time': policy_elapsed_time,
+                'policy_sim_time': policy_sim_time,
+                'policy_fell_time': policy_fell_time,
+                'policy_metrics': policy_metrics
             }
             results.append(result)
 
             if completed:
                 cprint(f"    Run {run+1}: Completed ✓", "green")
             else:
-                cprint(f"    Run {run+1}: Timeout", "red")
+                reason = failure_reason or "failed"
+                details = ""
+                if incomplete_details:
+                    details = f" | {', '.join(incomplete_details)}"
+                cprint(f"    Run {run+1}: Failed ({reason}){details}", "red")
+
+            # Per-run detailed summary
+            if policy_elapsed_time is not None:
+                cprint(f"    Elapsed: {policy_elapsed_time:.2f}s | SimTime: {policy_sim_time:.2f}s | Steps: {policy_steps}", "white")
+            if fell and policy_fell_time is not None:
+                cprint(f"    Fell at: {policy_fell_time:.2f}s", "red")
+            pm_all = policy_metrics or {}
+            if pm_all:
+                def _print_metrics_block(title, pm):
+                    if not pm:
+                        return
+                    cprint(f"    Metrics ({title}):", "white")
+                    if pm.get("tracking_dof_abs_mean") is not None:
+                        cprint(f"      tracking_dof_abs_mean: {pm['tracking_dof_abs_mean']:.4f}", "white")
+                    if pm.get("tracking_dof_abs_std") is not None:
+                        cprint(f"      tracking_dof_abs_std:  {pm['tracking_dof_abs_std']:.4f}", "white")
+                    if pm.get("root_pos_z_abs_mean") is not None:
+                        cprint(f"      root_pos_z_abs_mean:   {pm['root_pos_z_abs_mean']:.4f}", "white")
+                    if pm.get("root_vel_xy_l2_mean") is not None:
+                        cprint(f"      root_vel_xy_l2_mean:   {pm['root_vel_xy_l2_mean']:.4f}", "white")
+                    if pm.get("roll_pitch_abs_mean") is not None:
+                        cprint(f"      roll_pitch_abs_mean:   {pm['roll_pitch_abs_mean']:.4f}", "white")
+                    if pm.get("yaw_ang_vel_abs_mean") is not None:
+                        cprint(f"      yaw_ang_vel_abs_mean:  {pm['yaw_ang_vel_abs_mean']:.4f}", "white")
+                    if pm.get("action_delta_abs_mean") is not None:
+                        cprint(f"      action_delta_abs_mean: {pm['action_delta_abs_mean']:.4f}", "white")
+                    if pm.get("torque_abs_mean") is not None:
+                        cprint(f"      torque_abs_mean:       {pm['torque_abs_mean']:.4f}", "white")
+                    if pm.get("power_abs_mean") is not None:
+                        cprint(f"      power_abs_mean:        {pm['power_abs_mean']:.4f}", "white")
+                    if pm.get("root_height_std") is not None:
+                        cprint(f"      root_height_std:       {pm['root_height_std']:.4f}", "white")
+
+                _print_metrics_block("total", pm_all.get("total"))
+                _print_metrics_block("stand", pm_all.get("stand"))
+                _print_metrics_block("motion", pm_all.get("motion"))
 
             time.sleep(1.0)  # Brief pause between runs
 
@@ -225,6 +451,27 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
         success_rate = len([r for r in results if r['completed'] and not r['fell']]) / num_runs
         fall_rate = len(fell_runs) / num_runs
         completion_rate = len(completed_runs) / num_runs
+        avg_completion_ratio = float(np.mean([r['completion_ratio'] for r in results])) if results else 0.0
+
+        # Aggregate policy metrics (weighted by steps)
+        def _weighted_mean_metric(metric_key, phase_key="total"):
+            total = 0.0
+            weight = 0
+            for r in results:
+                m = (r.get("policy_metrics") or {}).get(phase_key) or {}
+                steps = m.get("steps", 0)
+                if metric_key in m and steps > 0:
+                    total += float(m[metric_key]) * steps
+                    weight += steps
+            return (total / weight) if weight > 0 else None
+
+        def _mean_metric(metric_key, phase_key="total"):
+            vals = []
+            for r in results:
+                m = (r.get("policy_metrics") or {}).get(phase_key) or {}
+                if metric_key in m:
+                    vals.append(float(m[metric_key]))
+            return float(np.mean(vals)) if vals else None
 
         model_metrics = {
             'model_name': os.path.basename(onnx_file),
@@ -232,10 +479,54 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
             'success_rate': success_rate,
             'fall_rate': fall_rate,
             'completion_rate': completion_rate,
+            'avg_completion_ratio': avg_completion_ratio,
             'num_successful': len([r for r in results if r['completed'] and not r['fell']]),
             'num_fell': len(fell_runs),
             'num_completed': len(completed_runs),
-            'avg_duration': np.mean([r['duration'] for r in results]),
+            'avg_duration': float(np.mean([r['duration'] for r in results])),
+            'failure_reasons': dict((k, len([r for r in results if r['failure_reason'] == k]))
+                                    for k in sorted(set(r['failure_reason'] for r in results if r['failure_reason']))),
+            'policy_metrics_weighted': {
+                'total': {
+                    'tracking_dof_abs_mean': _weighted_mean_metric('tracking_dof_abs_mean', 'total'),
+                    'root_pos_z_abs_mean': _weighted_mean_metric('root_pos_z_abs_mean', 'total'),
+                    'root_vel_xy_l2_mean': _weighted_mean_metric('root_vel_xy_l2_mean', 'total'),
+                    'roll_pitch_abs_mean': _weighted_mean_metric('roll_pitch_abs_mean', 'total'),
+                    'yaw_ang_vel_abs_mean': _weighted_mean_metric('yaw_ang_vel_abs_mean', 'total'),
+                    'action_delta_abs_mean': _weighted_mean_metric('action_delta_abs_mean', 'total'),
+                    'torque_abs_mean': _weighted_mean_metric('torque_abs_mean', 'total'),
+                    'power_abs_mean': _weighted_mean_metric('power_abs_mean', 'total'),
+                    'root_height_std': _weighted_mean_metric('root_height_std', 'total'),
+                    'tracking_dof_abs_std': _weighted_mean_metric('tracking_dof_abs_std', 'total'),
+                    'mimic_obs_mismatch_count_mean': _mean_metric('mimic_obs_mismatch_count', 'total'),
+                },
+                'stand': {
+                    'tracking_dof_abs_mean': _weighted_mean_metric('tracking_dof_abs_mean', 'stand'),
+                    'root_pos_z_abs_mean': _weighted_mean_metric('root_pos_z_abs_mean', 'stand'),
+                    'root_vel_xy_l2_mean': _weighted_mean_metric('root_vel_xy_l2_mean', 'stand'),
+                    'roll_pitch_abs_mean': _weighted_mean_metric('roll_pitch_abs_mean', 'stand'),
+                    'yaw_ang_vel_abs_mean': _weighted_mean_metric('yaw_ang_vel_abs_mean', 'stand'),
+                    'action_delta_abs_mean': _weighted_mean_metric('action_delta_abs_mean', 'stand'),
+                    'torque_abs_mean': _weighted_mean_metric('torque_abs_mean', 'stand'),
+                    'power_abs_mean': _weighted_mean_metric('power_abs_mean', 'stand'),
+                    'root_height_std': _weighted_mean_metric('root_height_std', 'stand'),
+                    'tracking_dof_abs_std': _weighted_mean_metric('tracking_dof_abs_std', 'stand'),
+                    'mimic_obs_mismatch_count_mean': _mean_metric('mimic_obs_mismatch_count', 'stand'),
+                },
+                'motion': {
+                    'tracking_dof_abs_mean': _weighted_mean_metric('tracking_dof_abs_mean', 'motion'),
+                    'root_pos_z_abs_mean': _weighted_mean_metric('root_pos_z_abs_mean', 'motion'),
+                    'root_vel_xy_l2_mean': _weighted_mean_metric('root_vel_xy_l2_mean', 'motion'),
+                    'roll_pitch_abs_mean': _weighted_mean_metric('roll_pitch_abs_mean', 'motion'),
+                    'yaw_ang_vel_abs_mean': _weighted_mean_metric('yaw_ang_vel_abs_mean', 'motion'),
+                    'action_delta_abs_mean': _weighted_mean_metric('action_delta_abs_mean', 'motion'),
+                    'torque_abs_mean': _weighted_mean_metric('torque_abs_mean', 'motion'),
+                    'power_abs_mean': _weighted_mean_metric('power_abs_mean', 'motion'),
+                    'root_height_std': _weighted_mean_metric('root_height_std', 'motion'),
+                    'tracking_dof_abs_std': _weighted_mean_metric('tracking_dof_abs_std', 'motion'),
+                    'mimic_obs_mismatch_count_mean': _mean_metric('mimic_obs_mismatch_count', 'motion'),
+                },
+            },
             'runs': results
         }
 
@@ -293,8 +584,19 @@ def print_result_summary(result):
     cprint(f"  Success Rate:     {result['success_rate']*100:.1f}%", "green")
     cprint(f"  Fall Rate:        {result['fall_rate']*100:.1f}%", "red" if result['fall_rate'] > 0 else "green")
     cprint(f"  Completion Rate:  {result['completion_rate']*100:.1f}%", "cyan")
+    cprint(f"  Avg Completion:   {result['avg_completion_ratio']*100:.1f}%", "cyan")
     cprint(f"  Avg Duration:      {result['avg_duration']:.2f}s", "white")
     cprint(f"  Runs: {result['num_successful']}/{result['num_runs']} successful, {result['num_fell']} fell", "white")
+    if result.get("failure_reasons"):
+        cprint(f"  Fail Reasons:      {result['failure_reasons']}", "white")
+    pm = result.get("policy_metrics_weighted") or {}
+    pm_total = pm.get("total") or {}
+    if pm_total.get("tracking_dof_abs_mean") is not None:
+        cprint(f"  Track DOF Err:     {pm_total['tracking_dof_abs_mean']:.4f}", "white")
+    if pm_total.get("root_vel_xy_l2_mean") is not None:
+        cprint(f"  Root Vel Err:      {pm_total['root_vel_xy_l2_mean']:.4f}", "white")
+    if pm_total.get("roll_pitch_abs_mean") is not None:
+        cprint(f"  Roll/Pitch Err:    {pm_total['roll_pitch_abs_mean']:.4f}", "white")
 
 
 def generate_summary(all_results, output_dir):
@@ -306,14 +608,23 @@ def generate_summary(all_results, output_dir):
 
     # Save detailed JSON results
     results_path = os.path.join(output_dir, "evaluation_results.json")
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    results_path_ts = os.path.join(output_dir, f"evaluation_results_{timestamp}.json")
     with open(results_path, 'w') as f:
         json.dump({
-            'motion_file': 'motion',
+            'motion_file': all_results[0]['runs'][0].get('motion_file', 'unknown') if all_results and all_results[0].get('runs') else 'unknown',
+            'total_models': len(all_results),
+            'results': all_results
+        }, f, indent=2)
+    with open(results_path_ts, 'w') as f:
+        json.dump({
+            'motion_file': all_results[0]['runs'][0].get('motion_file', 'unknown') if all_results and all_results[0].get('runs') else 'unknown',
             'total_models': len(all_results),
             'results': all_results
         }, f, indent=2)
 
     cprint(f"\nDetailed results saved to: {results_path}", "green")
+    cprint(f"Timestamped results saved to: {results_path_ts}", "green")
 
     # Print overall summary
     cprint(f"\n{'='*70}", "cyan")
@@ -327,9 +638,15 @@ def generate_summary(all_results, output_dir):
         cprint(f"  Fall Rate:        {result['fall_rate']*100:.1f}%",
                  "red" if result['fall_rate'] > 0.2 else "green")
         cprint(f"  Completion Rate:  {result['completion_rate']*100:.1f}%", "cyan")
+        cprint(f"  Avg Completion:   {result['avg_completion_ratio']*100:.1f}%", "cyan")
 
     # Best model
-    best_success = max(all_results, key=lambda x: x['success_rate'])
+    def _best_key(result):
+        tracking = result.get('policy_metrics_weighted', {}).get('total', {}).get('tracking_dof_abs_mean')
+        tracking_score = -tracking if tracking is not None else float('-inf')
+        return (result['success_rate'], tracking_score)
+
+    best_success = max(all_results, key=_best_key)
     cprint(f"\n{'='*70}", "cyan")
     cprint("BEST MODEL", "cyan")
     cprint(f"{'='*70}", "cyan")

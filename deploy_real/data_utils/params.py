@@ -11,7 +11,8 @@ DEFAULT_MIMIC_OBS_G1 = np.concatenate([
                             0.0, 0.0, 0.0, # torso (1)
                             0.0, 0.4, 0.0, 1.2, 0.0, 0.0, 0.0, # left arm (7)
                             0.0, -0.4, 0.0, 1.2, 0.0, 0.0, 0.0, # right arm (7)
-                        ])
+                        ]),
+                    np.array([0]) # mode indicator
                 ])
 
 DEFAULT_MIMIC_OBS_R1 = np.concatenate([
