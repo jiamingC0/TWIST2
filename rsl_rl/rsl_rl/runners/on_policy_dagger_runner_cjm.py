@@ -331,8 +331,8 @@ class OnPolicyDaggerRunnerCJM:
                 if it % (5*self.save_interval) == 0:
                     self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
             ep_infos.clear()
-        
-        # self.current_learning_iteration += num_learning_iterations
+        # 这一行注释会导致model_0被最后的pt覆盖掉
+        self.current_learning_iteration += num_learning_iterations
         self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
     
     def _need_normalizer_update(self, iterations, update_iterations):
