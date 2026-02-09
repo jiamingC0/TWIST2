@@ -170,6 +170,7 @@ class OnPolicyDaggerRunnerCJM:
         self.eval_interval = self.cfg.get("eval_interval", 200)
         self.eval_num_episodes = self.cfg.get("eval_num_episodes", 10)
         self.eval_save_metrics = self.cfg.get("eval_save_metrics", True)
+        self.enable_eval_policy = self.cfg.get("enable_eval_policy", False)  # Control whether to enable evaluate_policy during training
 
         if "Transformer" in self.cfg["policy_class_name"]:
             self.alg.init_storage(
@@ -308,7 +309,7 @@ class OnPolicyDaggerRunnerCJM:
             learn_time = stop - start
 
             # Check if evaluation is needed
-            if it % self.eval_interval == 0 and it > 0:
+            if self.enable_eval_policy and it % self.eval_interval == 0 and it > 0:
                 eval_metrics = self.evaluate_policy(it)
             else:
                 eval_metrics = None

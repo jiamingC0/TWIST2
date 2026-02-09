@@ -277,6 +277,7 @@ class G1MimicStuFutureCJMCfgDAgger(G1MimicStuFutureCJMCfg):
         eval_interval = 200  # Evaluate every N iterations
         eval_num_episodes = 10  # Number of episodes for evaluation
         eval_save_metrics = True  # Save evaluation metrics
+        enable_eval_policy = False  # Enable/disable evaluate_policy during training (recommend: False for single env, True for separate eval env)
 
         # from HumanoidMimicCfgPPO.runner
         num_steps_per_env = 24 # per iteration
