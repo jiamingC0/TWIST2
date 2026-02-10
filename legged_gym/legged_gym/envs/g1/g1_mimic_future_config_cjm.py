@@ -286,7 +286,7 @@ class G1MimicStuFutureCJMCfgDAgger(G1MimicStuFutureCJMCfg):
         # 导致 rollout 变短、value target 变 noisy、critic 发散、policy 退化
         entropy_anneal_enabled = True  # 是否启用 entropy 退火
         entropy_anneal_ratio = 0.6  # 在 max_iterations 的 60% 处退火
-        entropy_coef_final = 0.0  # 退火后的最终值
+        entropy_coef_final = 0.001  # 退火后的最终值
 
         dagger_coef_anneal_steps = 60000  # Total steps to anneal dagger_coef to dagger_coef_min
         dagger_coef = 0.2
@@ -347,4 +347,3 @@ class G1MimicStuFutureCJMCfgDAgger(G1MimicStuFutureCJMCfg):
         priv_encoder_dims = [64, 20]
         tanh_encoder_output = False
         fix_action_std = False
-

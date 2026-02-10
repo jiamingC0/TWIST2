@@ -326,16 +326,21 @@ class OnPolicyDaggerRunnerCJM:
         
         anneal_ratio = self.alg_cfg["entropy_anneal_ratio"]
         entropy_coef_final = self.alg_cfg["entropy_coef_final"]
-        if it >= tot_iter * anneal_ratio:
-            entropy_coef = entropy_coef_final
-            if it == int(tot_iter * anneal_ratio):
-                from termcolor import cprint
-                cprint(f"[E1] Entropy annealing: entropy_coef = {entropy_coef_final} at iteration {it}", "yellow")
+        max_iters = self.cfg.get("max_iterations", tot_iter)
+        start_iter = max_iters * anneal_ratio
+        if max_iters <= start_iter:
+            self.entropy_anneal_progress = 1.0
+            return entropy_coef_final
+
+        if it >= start_iter:
+            progress = min((it - start_iter) / (max_iters - start_iter), 1.0)
+            entropy_coef = entropy_coef * (1.0 - progress) + entropy_coef_final * progress
+            self.entropy_anneal_progress = progress
+            # if it == int(start_iter):
+            #     from termcolor import cprint
+            #     cprint(f"[E1] Entropy annealing: start at iter {it}, final {entropy_coef_final}", "yellow")
         else:
-            # 线性退火（可选）
-            # progress = min(it / (tot_iter * anneal_ratio), 1.0)
-            # entropy_coef = self.alg_cfg.entropy_coef * (1 - progress) + entropy_coef_final * progress
-            pass
+            self.entropy_anneal_progress = 0.0
         return entropy_coef
     def _need_normalizer_update(self, iterations, update_iterations):
         return iterations < update_iterations
@@ -391,6 +396,8 @@ class OnPolicyDaggerRunnerCJM:
             wandb_dict['Scale/motion_difficulty'] = locs["mean_motion_difficulty"]
 
         wandb_dict['Policy/mean_noise_std'] = mean_std.item()
+        wandb_dict['Policy/action_std_mean'] = mean_std.item()
+        wandb_dict['Anneal/entropy_progress'] = getattr(self, "entropy_anneal_progress", 0.0)
         wandb_dict['Perf/total_fps'] = fps
         wandb_dict['Perf/collection time'] = locs['collection_time']
         wandb_dict['Perf/learning_time'] = locs['learn_time']
