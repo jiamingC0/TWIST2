@@ -30,6 +30,7 @@ class RedisKeys:
     """
     # Motion status keys
     T_STATE: str = "t_state"
+    MOTION_TEST_ID: str = "motion_test_id"
     MOTION_PHASE: str = "motion_phase"
     MOTION_DONE: str = "motion_done"
     POLICY_STOP: str = "policy_stop"
@@ -47,6 +48,14 @@ class RedisKeys:
 
     # Action keys (motion -> redis)
     ACTION_BODY: str = "action_body_{robot}"
+    ACTION_TAG: str = "action_tag_{robot}"
+    ACTION_TAG_TS: str = "action_tag_ts_{robot}"
+    ACTION_FIRST_TAG: str = "action_first_tag_{robot}"
+    ACTION_FIRST_TS: str = "action_first_ts_{robot}"
+    ACTION_LAST_TAG: str = "action_last_tag_{robot}"
+    ACTION_LAST_TS: str = "action_last_ts_{robot}"
+    POLICY_FIRST_TAG: str = "policy_first_tag_{robot}"
+    POLICY_FIRST_TS: str = "policy_first_ts_{robot}"
     ACTION_HAND_LEFT: str = "action_hand_left_{robot}"
     ACTION_HAND_RIGHT: str = "action_hand_right_{robot}"
     ACTION_NECK: str = "action_neck_{robot}"

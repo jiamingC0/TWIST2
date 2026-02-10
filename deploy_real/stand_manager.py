@@ -29,13 +29,14 @@ class StandManager:
     control_dt: float
     robot_base: str
 
-    def pre_stand(self, steps: int, task_id: int = 0) -> None:
+    def pre_stand(self, steps: int, task_id: int = 0, next_tag_fn=None) -> None:
         if steps <= 0:
             return
         for t_step in range(steps):
             t0 = time.time()
             frame = self.motion_streamer.build_frame(t_step, task_id=task_id)
-            self.redis_io.set_action_body(self.robot, frame.mimic_obs)
+            tag = next_tag_fn() if next_tag_fn is not None else None
+            self.redis_io.set_action_body(self.robot, frame.mimic_obs, tag=tag)
             self.redis_io.set_action_hands_neck(self.robot)
             self.redis_io.client.set(self.redis_io.keys.T_STATE, int(time.time() * 1000))
             self.redis_io.set_motion_phase(MotionPhase.PRE_STAND.value)
@@ -53,12 +54,14 @@ class StandManager:
             if elapsed < self.control_dt:
                 time.sleep(self.control_dt - elapsed)
 
-    def cleanup(self, last_mimic_obs: np.ndarray, target_mimic_obs: np.ndarray, seconds: float = 5.0) -> None:
+    def cleanup(self, last_mimic_obs: np.ndarray, target_mimic_obs: np.ndarray, seconds: float = 5.0, next_tag_fn=None) -> None:
         print("[MotionServer] Cleaning up... Interpolating to default mimic_obs...")
         steps = int(seconds / self.control_dt)
         for i in range(steps):
             interp = last_mimic_obs + (target_mimic_obs - last_mimic_obs) * (i / steps)
-            self.redis_io.set_action_body(self.robot, interp)
+            tag = next_tag_fn() if next_tag_fn is not None else None
+            self.redis_io.set_action_body(self.robot, interp, tag=tag)
             self.redis_io.set_motion_phase(MotionPhase.CLEANUP.value)
             time.sleep(self.control_dt)
-        self.redis_io.set_action_body(self.robot, target_mimic_obs)
+        tag = next_tag_fn() if next_tag_fn is not None else None
+        self.redis_io.set_action_body(self.robot, target_mimic_obs, tag=tag)

@@ -124,7 +124,25 @@ def _policy_controller_wrapper(queue, args):
     queue.put(('policy', result))
 
 
-def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="localhost", exp_idx=0, num_runs=5, motion_viewer=False, policy_viewer=False):
+def _append_sequence_debug(run_dir, model_name, run_idx, motion_first_tag, motion_first_ts, motion_last_tag, motion_last_ts, policy_first_tag, policy_first_ts):
+    if not run_dir:
+        return
+    seq_debug_path = os.path.join(run_dir, "sequence_debug.txt")
+    if not os.path.exists(seq_debug_path):
+        with open(seq_debug_path, "w") as f:
+            f.write("SEQUENCE DEBUG\n")
+            f.write("=" * 70 + "\n\n")
+    with open(seq_debug_path, "a") as f:
+        if run_idx == 1:
+            f.write(f"{model_name}\n")
+        f.write(
+            f"  Run {run_idx}: motion_first={motion_first_tag} @{motion_first_ts} "
+            f"motion_last={motion_last_tag} @{motion_last_ts} "
+            f"policy_first={policy_first_tag} @{policy_first_ts}\n"
+        )
+
+
+def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="localhost", exp_idx=0, num_runs=5, motion_viewer=False, policy_viewer=False, run_dir=None):
     """
     Run a single experiment with specified ONNX model using multiprocessing.
     Returns metrics dict if experiment completed successfully, None otherwise.
@@ -157,8 +175,33 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
             try:
                 redis_io = RedisIO.connect(host=redis_ip, port=6379, db=0)
                 redis_io.clear_flags()
+                # Set test id for this run so MotionServer can tag actions.
+                redis_io.set_motion_test_id(str(run + 1))
             except Exception as e:
                 cprint(f"Warning: failed to clear redis flags before run: {e}", "yellow")
+
+            def _parse_str(value):
+                if value is None:
+                    return None
+                if isinstance(value, bytes):
+                    try:
+                        value = value.decode("utf-8")
+                    except Exception:
+                        return None
+                return str(value)
+
+            def _parse_float(value):
+                if value is None:
+                    return None
+                if isinstance(value, bytes):
+                    try:
+                        value = value.decode("utf-8")
+                    except Exception:
+                        return None
+                try:
+                    return float(value)
+                except Exception:
+                    return None
 
             # Start motion server subprocess
             motion_queue = mp.Queue()
@@ -169,6 +212,8 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
             motion_process.start()
             
             time.sleep(2.0)
+
+            # Tag info will be captured after the run completes.
             
             # Start policy controller subprocess
             policy_queue = mp.Queue()
@@ -386,6 +431,24 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
                 if completion_ratio < 0.98:
                     incomplete_details.append(f"completion_ratio={completion_ratio:.3f}<0.98")
 
+            # Capture tag info after run completes.
+            motion_first_tag = None
+            motion_first_ts = None
+            motion_last_tag = None
+            motion_last_ts = None
+            policy_first_tag = None
+            policy_first_ts = None
+            try:
+                if redis_io is not None:
+                    motion_first_tag = _parse_str(redis_io.get_action_first_tag("unitree_g1_with_hands"))
+                    motion_first_ts = _parse_float(redis_io.get_action_first_ts("unitree_g1_with_hands"))
+                    motion_last_tag = _parse_str(redis_io.get_action_last_tag("unitree_g1_with_hands"))
+                    motion_last_ts = _parse_float(redis_io.get_action_last_ts("unitree_g1_with_hands"))
+                    policy_first_tag = _parse_str(redis_io.get_value(redis_io.keys.format(redis_io.keys.POLICY_FIRST_TAG, "unitree_g1_with_hands")))
+                    policy_first_ts = _parse_float(redis_io.get_value(redis_io.keys.format(redis_io.keys.POLICY_FIRST_TS, "unitree_g1_with_hands")))
+            except Exception:
+                pass
+
             result = {
                 'run': run + 1,
                 'completed': completed,
@@ -398,6 +461,12 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
                 'motion_status': motion_status,
                 'failure_reason': failure_reason,
                 'incomplete_details': incomplete_details,
+                'motion_first_tag': motion_first_tag,
+                'motion_first_ts': motion_first_ts,
+                'motion_last_tag': motion_last_tag,
+                'motion_last_ts': motion_last_ts,
+                'policy_first_tag': policy_first_tag,
+                'policy_first_ts': policy_first_ts,
                 'policy_steps': policy_steps,
                 'policy_elapsed_time': policy_elapsed_time,
                 'policy_sim_time': policy_sim_time,
@@ -414,6 +483,19 @@ def run_single_experiment(motion_file, motion_length, onnx_file, redis_ip="local
                 if incomplete_details:
                     details = f" | {', '.join(incomplete_details)}"
                 cprint(f"    Run {run+1}: Failed ({reason}){details}", "red")
+
+            # Append sequence debug line in real time (per run).
+            _append_sequence_debug(
+                run_dir=run_dir,
+                model_name=os.path.basename(onnx_file),
+                run_idx=run + 1,
+                motion_first_tag=motion_first_tag,
+                motion_first_ts=motion_first_ts,
+                motion_last_tag=motion_last_tag,
+                motion_last_ts=motion_last_ts,
+                policy_first_tag=policy_first_tag,
+                policy_first_ts=policy_first_ts,
+            )
 
             # Per-run detailed summary
             if policy_elapsed_time is not None:
@@ -564,6 +646,14 @@ def evaluate_all_models(motion_file, onnx_dir, redis_ip="localhost", num_runs=5,
     cprint(f"Runs per model: {num_runs}", "green")
     cprint("="*70, "cyan")
 
+    if output_dir is None:
+        output_dir = os.path.join(os.getcwd(), "onnx_evaluation_results")
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    onnx_dir_name = os.path.basename(os.path.normpath(onnx_dir)) if onnx_dir else "onnx"
+    run_dir = os.path.join(output_dir, f"{timestamp}-{onnx_dir_name}")
+    os.makedirs(run_dir, exist_ok=True)
+
     all_results = []
     
     motion_lib = MotionLib(motion_file, device="cpu")
@@ -572,7 +662,7 @@ def evaluate_all_models(motion_file, onnx_dir, redis_ip="localhost", num_runs=5,
 
     for exp_idx, onnx_file in enumerate(onnx_files):
         result = run_single_experiment(
-            motion_file, motion_length, onnx_file, redis_ip, exp_idx, num_runs, motion_viewer, policy_viewer
+            motion_file, motion_length, onnx_file, redis_ip, exp_idx, num_runs, motion_viewer, policy_viewer, run_dir
         )
 
         if result:
@@ -583,7 +673,42 @@ def evaluate_all_models(motion_file, onnx_dir, redis_ip="localhost", num_runs=5,
 
     # Generate summary report
     if all_results:
-        generate_summary(all_results, output_dir, onnx_dir)
+        generate_summary(all_results, run_dir, timestamp)
+
+
+def evaluate_single_model(motion_file, onnx_file, redis_ip="localhost", output_dir=None, motion_viewer=True, policy_viewer=True):
+    """Evaluate a single ONNX model exactly once and show viewers."""
+    cprint("="*70, "cyan")
+    cprint("SINGLE ONNX MODEL EVALUATION", "cyan")
+    cprint("="*70, "cyan")
+    cprint(f"Motion file: {motion_file}", "green")
+    cprint(f"ONNX file:   {onnx_file}", "green")
+    cprint("Runs:        1", "green")
+    cprint("Viewers:     MotionServer + RealTimePolicyController", "green")
+    cprint("="*70, "cyan")
+
+    if output_dir is None:
+        output_dir = os.path.join(os.getcwd(), "onnx_evaluation_results")
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    model_name = os.path.splitext(os.path.basename(onnx_file))[0]
+    run_dir = os.path.join(output_dir, f"{timestamp}-{model_name}")
+    os.makedirs(run_dir, exist_ok=True)
+
+    motion_lib = MotionLib(motion_file, device="cpu")
+    motion_id = torch.tensor([0], device="cpu", dtype=torch.long)
+    motion_length = motion_lib.get_motion_length(motion_id)
+
+    result = run_single_experiment(
+        motion_file, motion_length, onnx_file,
+        redis_ip=redis_ip, exp_idx=0, num_runs=1,
+        motion_viewer=motion_viewer, policy_viewer=policy_viewer,
+        run_dir=run_dir
+    )
+
+    if result:
+        print_result_summary(result)
+        generate_summary([result], run_dir, timestamp)
 
 
 def print_result_summary(result):
@@ -607,17 +732,8 @@ def print_result_summary(result):
         cprint(f"  Roll/Pitch Err:    {pm_total['roll_pitch_abs_mean']:.4f}", "white")
 
 
-def generate_summary(all_results, output_dir, onnx_dir=None):
+def generate_summary(all_results, run_dir, timestamp):
     """Generate comprehensive summary report."""
-    if output_dir is None:
-        output_dir = os.path.join(os.getcwd(), "onnx_evaluation_results")
-
-    os.makedirs(output_dir, exist_ok=True)
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    onnx_dir_name = os.path.basename(os.path.normpath(onnx_dir)) if onnx_dir else "onnx"
-    run_dir = os.path.join(output_dir, f"{timestamp}-{onnx_dir_name}")
-    os.makedirs(run_dir, exist_ok=True)
-
     # Save detailed JSON results
     results_path = os.path.join(run_dir, "evaluation_results.json")
     results_path_ts = os.path.join(run_dir, f"evaluation_results_{timestamp}.json")
@@ -667,6 +783,8 @@ def generate_summary(all_results, output_dir, onnx_dir=None):
 
     cprint(f"\n{'='*70}\n", "cyan")
 
+    # sequence_debug.txt is appended in real-time per run.
+
     # Write summary text file
     summary_path = os.path.join(run_dir, "result.txt")
     with open(summary_path, "w") as f:
@@ -709,8 +827,10 @@ def main():
     parser = argparse.ArgumentParser(description='Automated ONNX Model Evaluation with Motion Tracking')
     parser.add_argument('--motion_file', type=str, required=True,
                         help='Path to .pkl motion file')
-    parser.add_argument('--onnx_dir', type=str, required=True,
+    parser.add_argument('--onnx_dir', type=str, default=None,
                         help='Path to directory containing .onnx models')
+    parser.add_argument('--onnx_file', type=str, default=None,
+                        help='Path to a single .onnx model file (runs once, viewers enabled)')
     parser.add_argument('--redis_ip', type=str, default='localhost',
                         help='Redis IP address')
     parser.add_argument('--num_runs', type=int, default=5,
@@ -729,6 +849,25 @@ def main():
     # Validate inputs
     if not os.path.exists(args.motion_file):
         cprint(f"Error: Motion file not found: {args.motion_file}", "red")
+        return
+
+    if not args.onnx_dir and not args.onnx_file:
+        cprint("Error: Must specify either --onnx_dir or --onnx_file", "red")
+        return
+
+    if args.onnx_file:
+        if not os.path.isfile(args.onnx_file):
+            cprint(f"Error: ONNX file not found: {args.onnx_file}", "red")
+            return
+        # Single-file mode: force one run and show viewers.
+        evaluate_single_model(
+            motion_file=args.motion_file,
+            onnx_file=args.onnx_file,
+            redis_ip=args.redis_ip,
+            output_dir=args.output_dir,
+            motion_viewer=True,
+            policy_viewer=True
+        )
         return
 
     if not os.path.isdir(args.onnx_dir):

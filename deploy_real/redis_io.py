@@ -48,6 +48,12 @@ class RedisIO:
     def set_motion_phase(self, phase: str) -> None:
         self.client.set(self.keys.MOTION_PHASE, phase)
 
+    def set_motion_test_id(self, test_id: str) -> None:
+        self.client.set(self.keys.MOTION_TEST_ID, str(test_id))
+
+    def get_motion_test_id(self) -> Optional[bytes]:
+        return self.client.get(self.keys.MOTION_TEST_ID)
+
     def set_motion_done(self, done: bool) -> None:
         self.client.set(self.keys.MOTION_DONE, int(bool(done)))
 
@@ -59,6 +65,7 @@ class RedisIO:
         self.client.delete(self.keys.MOTION_PHASE)
         self.client.delete(self.keys.MOTION_DONE)
         self.client.delete(self.keys.POLICY_STOP)
+        # Do not clear action or tag keys here.
 
     def get_motion_phase(self) -> Optional[bytes]:
         return self.client.get(self.keys.MOTION_PHASE)
@@ -97,6 +104,32 @@ class RedisIO:
             json.loads(results[3]),
         )
 
+    def get_action_tag(self, robot: str) -> Optional[bytes]:
+        return self.client.get(self.keys.format(self.keys.ACTION_TAG, robot))
+
+    def get_action_tag_ts(self, robot: str) -> Optional[bytes]:
+        return self.client.get(self.keys.format(self.keys.ACTION_TAG_TS, robot))
+
+    def get_action_first_tag(self, robot: str) -> Optional[bytes]:
+        return self.client.get(self.keys.format(self.keys.ACTION_FIRST_TAG, robot))
+
+    def get_action_first_ts(self, robot: str) -> Optional[bytes]:
+        return self.client.get(self.keys.format(self.keys.ACTION_FIRST_TS, robot))
+
+    def get_action_last_tag(self, robot: str) -> Optional[bytes]:
+        return self.client.get(self.keys.format(self.keys.ACTION_LAST_TAG, robot))
+
+    def get_action_last_ts(self, robot: str) -> Optional[bytes]:
+        return self.client.get(self.keys.format(self.keys.ACTION_LAST_TS, robot))
+
+    def set_policy_first_tag(self, robot: str, tag: str, ts: float) -> None:
+        key_tag = self.keys.format(self.keys.POLICY_FIRST_TAG, robot)
+        key_ts = self.keys.format(self.keys.POLICY_FIRST_TS, robot)
+        pipe = self.client.pipeline()
+        pipe.setnx(key_tag, str(tag))
+        pipe.setnx(key_ts, str(ts))
+        pipe.execute()
+
     def get_state_body(self, robot: str) -> Optional[list]:
         data = self.client.get(self.keys.format(self.keys.STATE_BODY, robot))
         if not data:
@@ -112,8 +145,27 @@ class RedisIO:
     def get_t_state(self) -> Optional[bytes]:
         return self.client.get(self.keys.T_STATE)
 
-    def set_action_body(self, robot: str, action_body: np.ndarray) -> None:
-        self.client.set(self.keys.format(self.keys.ACTION_BODY, robot), json.dumps(action_body.tolist()))
+    def set_action_body(self, robot: str, action_body: np.ndarray, tag: Optional[str] = None, ts: Optional[float] = None) -> None:
+        key_body = self.keys.format(self.keys.ACTION_BODY, robot)
+        pipe = self.client.pipeline()
+        pipe.set(key_body, json.dumps(action_body.tolist()))
+        if tag is not None:
+            key_tag = self.keys.format(self.keys.ACTION_TAG, robot)
+            key_ts = self.keys.format(self.keys.ACTION_TAG_TS, robot)
+            key_first_tag = self.keys.format(self.keys.ACTION_FIRST_TAG, robot)
+            key_first_ts = self.keys.format(self.keys.ACTION_FIRST_TS, robot)
+            key_last_tag = self.keys.format(self.keys.ACTION_LAST_TAG, robot)
+            key_last_ts = self.keys.format(self.keys.ACTION_LAST_TS, robot)
+            pipe.set(key_tag, str(tag))
+            if ts is None:
+                import time as _time
+                ts = _time.time()
+            pipe.set(key_ts, str(ts))
+            pipe.setnx(key_first_tag, str(tag))
+            pipe.setnx(key_first_ts, str(ts))
+            pipe.set(key_last_tag, str(tag))
+            pipe.set(key_last_ts, str(ts))
+        pipe.execute()
 
     def set_action_hands_neck(self, robot: str) -> None:
         self.client.set(self.keys.format(self.keys.ACTION_HAND_LEFT, robot), json.dumps(np.zeros(7).tolist()))

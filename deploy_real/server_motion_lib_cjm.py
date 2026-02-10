@@ -280,13 +280,41 @@ class MotionServer:
             # Reset motion status flags
             self.redis_io.set_motion_done(False)
             self.redis_io.set_motion_phase(MotionPhase.PRE_STAND.value)
+            # Snapshot test id and initialize action frame counter.
+            try:
+                test_id_raw = self.redis_io.get_motion_test_id()
+                if test_id_raw is None:
+                    self.test_id = "0"
+                elif isinstance(test_id_raw, bytes):
+                    self.test_id = test_id_raw.decode("utf-8")
+                else:
+                    self.test_id = str(test_id_raw)
+            except Exception:
+                self.test_id = "0"
+            self.action_frame = 0
+            self.tag_prefix = f"{self.test_id}--"
+            def _next_tag():
+                self.action_frame += 1
+                return f"{self.tag_prefix}{self.action_frame}"
+            print(f"[MotionServer] Test id={self.test_id}")
+            try:
+                # Clear per-run tag snapshots so first/last are from this run.
+                rk = self.redis_keys
+                self.redis_io.client.delete(rk.format(rk.ACTION_FIRST_TAG, self.robot))
+                self.redis_io.client.delete(rk.format(rk.ACTION_FIRST_TS, self.robot))
+                self.redis_io.client.delete(rk.format(rk.ACTION_LAST_TAG, self.robot))
+                self.redis_io.client.delete(rk.format(rk.ACTION_LAST_TS, self.robot))
+                self.redis_io.client.delete(rk.format(rk.POLICY_FIRST_TAG, self.robot))
+                self.redis_io.client.delete(rk.format(rk.POLICY_FIRST_TS, self.robot))
+            except Exception:
+                pass
             # Emit an initial heartbeat so policy controller won't treat us as stopped.
             self.redis_io.client.set(self.redis_keys.T_STATE, int(time.time() * 1000))
             # Pre-stand for a fixed duration (task_id=0)
             if self.play_standing_after_motion and self.standing_motion_lib is not None and self.pre_standing_steps > 0:
                 #  预站立阶段，发送 standing 的 mimic_obs（task_id=0）
                 print(f"[MotionServer] Pre-stand for {self.pre_standing_seconds:.1f}s ({self.pre_standing_steps} steps)...")
-                self.stand_manager.pre_stand(self.pre_standing_steps, task_id=0)
+                self.stand_manager.pre_stand(self.pre_standing_steps, task_id=0, next_tag_fn=_next_tag)
 
             #  进入正式动作播放阶段
             self.redis_io.set_motion_phase(MotionPhase.MOTION.value)
@@ -309,7 +337,7 @@ class MotionServer:
                         # Keep sending default pose while waiting for start signal
                         #  等待遥控启动时，持续发送静止姿态
                         idle_mimic_obs = self.start_frame_mimic_obs if self.send_start_frame_as_end_frame and self.start_frame_mimic_obs is not None else DEFAULT_MIMIC_OBS[self.robot]
-                        self.redis_io.set_action_body(self.robot, idle_mimic_obs)
+                        self.redis_io.set_action_body(self.robot, idle_mimic_obs, tag=_next_tag())
                         self.redis_io.set_action_hands_neck(self.robot)
 
                         # Sleep and continue to next iteration
@@ -325,7 +353,7 @@ class MotionServer:
                 root_pos = frame.root_pos
                 root_rot = frame.root_rot
                 dof_pos = frame.dof_pos
-                self.redis_io.set_action_body(self.robot, mimic_obs)
+                self.redis_io.set_action_body(self.robot, mimic_obs, tag=_next_tag())
                 self.redis_io.set_action_hands_neck(self.robot)
                 self.redis_io.client.set(self.redis_keys.T_STATE, int(time.time() * 1000))  # current timestamp in ms
                 self.redis_io.set_motion_phase(MotionPhase.MOTION.value)
@@ -373,6 +401,7 @@ class MotionServer:
                     last_mimic_obs=self.last_mimic_obs,
                     target_mimic_obs=self.start_frame_mimic_obs if self.send_start_frame_as_end_frame and self.start_frame_mimic_obs is not None else DEFAULT_MIMIC_OBS[self.robot],
                     seconds=self.config.cleanup_seconds,
+                    next_tag_fn=_next_tag,
                 )
                 self.redis_io.set_motion_phase(MotionPhase.DONE.value)
                 self.redis_io.set_motion_done(True)
@@ -382,6 +411,7 @@ class MotionServer:
                     last_mimic_obs=self.last_mimic_obs,
                     target_mimic_obs=self.start_frame_mimic_obs if self.send_start_frame_as_end_frame and self.start_frame_mimic_obs is not None else DEFAULT_MIMIC_OBS[self.robot],
                     seconds=self.config.cleanup_seconds,
+                    next_tag_fn=_next_tag,
                 )
 
     def cleanup(self, time_back_to_default=2.0):

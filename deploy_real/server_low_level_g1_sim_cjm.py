@@ -359,6 +359,7 @@ class RealTimePolicyController:
         saw_t_state = False
         start_time_ms = int(start_time * 1000)
         metrics_recorder = MetricsRecorder()
+        first_action_tag_seen = False
 
         def _format_result(status):
             if not collect_metrics:
@@ -465,6 +466,18 @@ class RealTimePolicyController:
                     action_mimic, action_left_hand, action_right_hand, action_neck = self.redis_io.get_actions("unitree_g1_with_hands")
                     if action_mimic is None:
                         continue
+                    if not first_action_tag_seen:
+                        try:
+                            action_tag = self.redis_io.get_action_tag("unitree_g1_with_hands")
+                            action_ts = self.redis_io.get_action_tag_ts("unitree_g1_with_hands")
+                            tag_val = action_tag.decode("utf-8") if isinstance(action_tag, bytes) else (str(action_tag) if action_tag is not None else None)
+                            ts_val = float(action_ts) if action_ts is not None else None
+                            print(f"[PolicyController] First action_tag={tag_val} action_ts={ts_val}")
+                            if tag_val is not None and ts_val is not None:
+                                self.redis_io.set_policy_first_tag("unitree_g1_with_hands", tag_val, ts_val)
+                        except Exception:
+                            pass
+                        first_action_tag_seen = True
                     # 输出action_mimic最后一个元素
                     # print(f"Action mimic last element: {action_mimic[-1]}")
                     # Construct observation for TWIST2 controller
