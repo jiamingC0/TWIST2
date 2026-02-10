@@ -295,7 +295,7 @@ class OnPolicyDaggerRunnerCJM:
             regularization_scale = self.env.cfg.rewards.regularization_scale if hasattr(self.env.cfg.rewards, "regularization_scale") else 1
             average_episode_length = torch.mean(self.env.episode_length.float()).item() if hasattr(self.env, "episode_length") else 0
             mean_motion_difficulty = self.env.mean_motion_difficulty if hasattr(self.env, "mean_motion_difficulty") else 0
-            mean_value_loss, mean_surrogate_loss, mean_priv_reg_loss, priv_reg_coef, mean_grad_penalty_loss, grad_penalty_coef, kl_teacher_student_loss, mean_kl = self.alg.update()
+            mean_value_loss, mean_surrogate_loss, mean_priv_reg_loss, priv_reg_coef, mean_grad_penalty_loss, grad_penalty_coef, kl_teacher_student_loss, mean_kl, num_updates_done, early_stop_hits, kl_min, kl_max, kl_avg, kl_p50, kl_p90 = self.alg.update()
     
             stop = time.time()
             learn_time = stop - start
@@ -356,6 +356,13 @@ class OnPolicyDaggerRunnerCJM:
         wandb_dict['Loss/learning_rate'] = self.alg.learning_rate
         wandb_dict['Loss/kl_teacher_student'] = locs['kl_teacher_student_loss']
         wandb_dict['Loss/policy_kl'] = locs['mean_kl']  # E3: 记录 policy KL
+        wandb_dict['E3/updates_done'] = locs['num_updates_done']
+        wandb_dict['E3/early_stop_hits'] = locs['early_stop_hits']
+        wandb_dict['E3/kl_min'] = locs['kl_min']
+        wandb_dict['E3/kl_max'] = locs['kl_max']
+        wandb_dict['E3/kl_avg'] = locs['kl_avg']
+        wandb_dict['E3/kl_p50'] = locs['kl_p50']
+        wandb_dict['E3/kl_p90'] = locs['kl_p90']
         wandb_dict['Adaptation/hist_latent_loss'] = locs['mean_hist_latent_loss']
         wandb_dict['Adaptation/priv_reg_loss'] = locs['mean_priv_reg_loss']
         wandb_dict['Adaptation/priv_ref_lambda'] = locs['priv_reg_coef']

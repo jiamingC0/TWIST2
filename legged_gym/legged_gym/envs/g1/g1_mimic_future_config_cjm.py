@@ -311,6 +311,7 @@ class G1MimicStuFutureCJMCfgDAgger(G1MimicStuFutureCJMCfg):
         kl_early_stop_enabled = True       # 是否启用 KL early-stop
         kl_early_stop_threshold = 2.5      # KL 超过 desired_kl 的倍数时停止 update
         kl_early_stop_log_freq = 100      # 多少次 early-stop 打印一次日志
+        kl_early_stop_observe_only = True  # 仅观测，不触发 early-stop
 
     class policy:
         action_std = [0.7] * 12 + [0.4] * 3 + [0.5] * 14
@@ -345,4 +346,3 @@ class G1MimicStuFutureCJMCfgDAgger(G1MimicStuFutureCJMCfg):
         priv_encoder_dims = [64, 20]
         tanh_encoder_output = False
         fix_action_std = False
-
