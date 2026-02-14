@@ -298,9 +298,18 @@ class G1MimicStuFutureCJMCfgDAgger(G1MimicStuFutureCJMCfg):
         num_mini_batches = 4 # mini batch size = num_envs*nsteps / nminibatches
         learning_rate = 2e-4 #1.e-3 #5.e-4
         schedule = 'adaptive' # could be adaptive, fixed
+        lr_min = 5e-5
+        lr_max = 3e-4
+        lr_adjust_factor = 1.2
         gamma = 0.99
         lam = 0.95
         desired_kl = 0.008
+        # Two-stage update control: learn fast early, stabilize late.
+        stability_switch_iter_ratio = 0.6
+        stability_stage2_desired_kl = 0.0045
+        stability_stage2_num_learning_epochs = 4
+        stability_stage2_clip_param = 0.15
+        stability_stage2_learning_rate_cap = 1e-4
         max_grad_norm = 1.
         dagger_update_freq = 20
         priv_reg_coef_schedual = [0, 0.1, 2000, 3000]
@@ -340,4 +349,3 @@ class G1MimicStuFutureCJMCfgDAgger(G1MimicStuFutureCJMCfg):
         priv_encoder_dims = [64, 20]
         tanh_encoder_output = False
         fix_action_std = False
-

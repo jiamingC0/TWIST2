@@ -71,6 +71,9 @@ class DaggerPPOCJM:
                  use_clipped_value_loss=True,
                  schedule="fixed",
                  desired_kl=0.01,
+                 lr_min=1e-5,
+                 lr_max=1e-2,
+                 lr_adjust_factor=1.5,
                  device='cpu',
                  dagger_update_freq=20,
                  priv_reg_coef_schedual = [0, 0, 0],
@@ -87,6 +90,9 @@ class DaggerPPOCJM:
         self.desired_kl = desired_kl
         self.schedule = schedule
         self.learning_rate = learning_rate
+        self.lr_min = lr_min
+        self.lr_max = lr_max
+        self.lr_adjust_factor = lr_adjust_factor
 
         # PPO components
         self.actor_critic = actor_critic
@@ -171,6 +177,11 @@ class DaggerPPOCJM:
         mean_surrogate_loss = 0
         mean_priv_reg_loss = 0
         kl_teacher_student_loss = 0.0
+        mean_approx_kl = 0.0
+        mean_clip_fraction = 0.0
+        mean_grad_norm = 0.0
+        lr_adjust_up_count = 0
+        lr_adjust_down_count = 0
 
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
@@ -194,18 +205,29 @@ class DaggerPPOCJM:
                         kl = torch.sum(
                             torch.log(sigma_batch / old_sigma_batch + 1.e-5) + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch)) / (2.0 * torch.square(sigma_batch)) - 0.5, axis=-1)
                         kl_mean = torch.mean(kl)
+                        kl_mean_item = kl_mean.item()
+                        mean_approx_kl += kl_mean_item
 
                         if kl_mean > self.desired_kl * 2.0:
-                            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                            self.learning_rate = max(self.lr_min, self.learning_rate / self.lr_adjust_factor)
+                            lr_adjust_down_count += 1
                         elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
-                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                            self.learning_rate = min(self.lr_max, self.learning_rate * self.lr_adjust_factor)
+                            lr_adjust_up_count += 1
                         
                         for param_group in self.optimizer.param_groups:
                             param_group['lr'] = self.learning_rate
+                else:
+                    with torch.inference_mode():
+                        kl = torch.sum(
+                            torch.log(sigma_batch / old_sigma_batch + 1.e-5) + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch)) / (2.0 * torch.square(sigma_batch)) - 0.5, axis=-1)
+                        mean_approx_kl += torch.mean(kl).item()
 
 
                 # Surrogate loss
                 ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
+                clip_fraction = ((ratio > (1.0 + self.clip_param)) | (ratio < (1.0 - self.clip_param))).float().mean()
+                mean_clip_fraction += clip_fraction.item()
                 surrogate = -torch.squeeze(advantages_batch) * ratio
                 surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(ratio, 1.0 - self.clip_param,
                                                                                 1.0 + self.clip_param)
@@ -248,7 +270,8 @@ class DaggerPPOCJM:
                 # Gradient step
                 self.optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+                grad_norm = nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+                mean_grad_norm += float(grad_norm)
                 self.optimizer.step()
 
                 mean_value_loss += value_loss.item()
@@ -266,6 +289,9 @@ class DaggerPPOCJM:
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_priv_reg_loss /= num_updates
+        mean_approx_kl /= num_updates
+        mean_clip_fraction /= num_updates
+        mean_grad_norm /= num_updates
         
         self.counter += 1
         self.storage.clear()
@@ -279,7 +305,20 @@ class DaggerPPOCJM:
             self.dagger_coef = self.dagger_coef_min
         # cprint(f"counter: {self.counter}, dagger_coef: {self.dagger_coef}", "green")
         
-        return mean_value_loss, mean_surrogate_loss, mean_priv_reg_loss, 0, 0, 0, kl_teacher_student_loss
+        return (
+            mean_value_loss,
+            mean_surrogate_loss,
+            mean_priv_reg_loss,
+            0,
+            0,
+            0,
+            kl_teacher_student_loss,
+            mean_approx_kl,
+            mean_clip_fraction,
+            mean_grad_norm,
+            lr_adjust_up_count,
+            lr_adjust_down_count,
+        )
 
 
     

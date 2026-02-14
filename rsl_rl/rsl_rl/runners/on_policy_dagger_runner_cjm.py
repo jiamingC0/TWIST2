@@ -165,6 +165,17 @@ class OnPolicyDaggerRunnerCJM:
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
         self.dagger_update_freq = self.alg_cfg["dagger_update_freq"]
+        self.stage_switch_ratio = self.alg_cfg.get("stability_switch_iter_ratio", 0.6)
+        self.stage2_desired_kl = self.alg_cfg.get("stability_stage2_desired_kl", self.alg.desired_kl)
+        self.stage2_num_learning_epochs = self.alg_cfg.get("stability_stage2_num_learning_epochs", self.alg.num_learning_epochs)
+        self.stage2_clip_param = self.alg_cfg.get("stability_stage2_clip_param", self.alg.clip_param)
+        self.stage2_learning_rate_cap = self.alg_cfg.get("stability_stage2_learning_rate_cap", None)
+        self.stage1_desired_kl = self.alg.desired_kl
+        self.stage1_num_learning_epochs = self.alg.num_learning_epochs
+        self.stage1_clip_param = self.alg.clip_param
+        self.current_stage = 1
+        self.current_stage_switch_iter = 0
+        self.current_stage_lr_cap = self.stage2_learning_rate_cap
 
         if "Transformer" in self.cfg["policy_class_name"]:
             self.alg.init_storage(
@@ -193,6 +204,28 @@ class OnPolicyDaggerRunnerCJM:
         self.current_learning_iteration = 0
         print("*************OnPolicyDaggerRunnerCJM init finish*************")
         
+    def _apply_training_stage(self, it, tot_iter):
+        max_iters = self.cfg.get("max_iterations", tot_iter)
+        switch_iter = int(max_iters * self.stage_switch_ratio)
+        in_stage2 = it >= switch_iter
+        self.current_stage = 2 if in_stage2 else 1
+        self.current_stage_switch_iter = switch_iter
+
+        if in_stage2:
+            self.alg.desired_kl = self.stage2_desired_kl
+            self.alg.num_learning_epochs = self.stage2_num_learning_epochs
+            self.alg.clip_param = self.stage2_clip_param
+            self.current_stage_lr_cap = self.stage2_learning_rate_cap
+            if self.stage2_learning_rate_cap is not None and self.alg.learning_rate > self.stage2_learning_rate_cap:
+                self.alg.learning_rate = self.stage2_learning_rate_cap
+                for param_group in self.alg.optimizer.param_groups:
+                    param_group['lr'] = self.alg.learning_rate
+        else:
+            self.alg.desired_kl = self.stage1_desired_kl
+            self.alg.num_learning_epochs = self.stage1_num_learning_epochs
+            self.alg.clip_param = self.stage1_clip_param
+            self.current_stage_lr_cap = None
+
 
     def learn_RL(self, num_learning_iterations, init_at_random_ep_len=False):
         mean_value_loss = 0.
@@ -202,8 +235,13 @@ class OnPolicyDaggerRunnerCJM:
         mean_hist_latent_loss = 0.
         mean_priv_reg_loss = 0. 
         priv_reg_coef = 0.
-        entropy_coef = 0.
+        entropy_coef = self.alg.entropy_coef
         grad_penalty_coef = 0.
+        mean_approx_kl = 0.
+        mean_clip_fraction = 0.
+        mean_grad_norm = 0.
+        lr_adjust_up_count = 0
+        lr_adjust_down_count = 0
 
         if init_at_random_ep_len:
             self.env.episode_length_buf = torch.randint_like(self.env.episode_length_buf, high=int(self.env.max_episode_length))
@@ -295,7 +333,8 @@ class OnPolicyDaggerRunnerCJM:
             regularization_scale = self.env.cfg.rewards.regularization_scale if hasattr(self.env.cfg.rewards, "regularization_scale") else 1
             average_episode_length = torch.mean(self.env.episode_length.float()).item() if hasattr(self.env, "episode_length") else 0
             mean_motion_difficulty = self.env.mean_motion_difficulty if hasattr(self.env, "mean_motion_difficulty") else 0
-            mean_value_loss, mean_surrogate_loss, mean_priv_reg_loss, priv_reg_coef, mean_grad_penalty_loss, grad_penalty_coef, kl_teacher_student_loss = self.alg.update()
+            self._apply_training_stage(it, tot_iter)
+            mean_value_loss, mean_surrogate_loss, mean_priv_reg_loss, priv_reg_coef, mean_grad_penalty_loss, grad_penalty_coef, kl_teacher_student_loss, mean_approx_kl, mean_clip_fraction, mean_grad_norm, lr_adjust_up_count, lr_adjust_down_count = self.alg.update()
     
             stop = time.time()
             learn_time = stop - start
@@ -352,9 +391,23 @@ class OnPolicyDaggerRunnerCJM:
 
         wandb_dict['Loss/value_func'] = locs['mean_value_loss']
         wandb_dict['Loss/surrogate'] = locs['mean_surrogate_loss']
-        wandb_dict['Loss/entropy_coef'] = locs['entropy_coef']
+        wandb_dict['Loss/entropy_coef'] = self.alg.entropy_coef
         wandb_dict['Loss/learning_rate'] = self.alg.learning_rate
         wandb_dict['Loss/kl_teacher_student'] = locs['kl_teacher_student_loss']
+        wandb_dict['Loss/approx_kl'] = locs['mean_approx_kl']
+        wandb_dict['Loss/clip_fraction'] = locs['mean_clip_fraction']
+        wandb_dict['Loss/grad_norm'] = locs['mean_grad_norm']
+        wandb_dict['LR/adjust_up_count'] = locs['lr_adjust_up_count']
+        wandb_dict['LR/adjust_down_count'] = locs['lr_adjust_down_count']
+        wandb_dict['LR/lr_min'] = self.alg.lr_min
+        wandb_dict['LR/lr_max'] = self.alg.lr_max
+        wandb_dict['Stage/id'] = self.current_stage
+        wandb_dict['Stage/switch_iter'] = self.current_stage_switch_iter
+        wandb_dict['Stage/desired_kl'] = self.alg.desired_kl
+        wandb_dict['Stage/num_learning_epochs'] = self.alg.num_learning_epochs
+        wandb_dict['Stage/clip_param'] = self.alg.clip_param
+        if self.current_stage_lr_cap is not None:
+            wandb_dict['Stage/lr_cap'] = self.current_stage_lr_cap
         wandb_dict['Adaptation/hist_latent_loss'] = locs['mean_hist_latent_loss']
         wandb_dict['Adaptation/priv_reg_loss'] = locs['mean_priv_reg_loss']
         wandb_dict['Adaptation/priv_ref_lambda'] = locs['priv_reg_coef']
