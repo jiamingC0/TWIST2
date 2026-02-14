@@ -40,8 +40,19 @@ def find_onnx_models(onnx_dir, reverse=False):
     import glob
     onnx_files = glob.glob(os.path.join(onnx_dir, "*.onnx"))
     if not onnx_files:
-        cprint(f"No .onnx files found in {onnx_dir}", "red")
-        return []
+        cprint(f"No .onnx files found in {onnx_dir}. Running to_onnx.sh once...", "yellow")
+        script_path = Path(__file__).parent / "to_onnx.sh"
+        try:
+            import subprocess
+            subprocess.run(["bash", str(script_path), onnx_dir], check=False)
+        except Exception as e:
+            cprint(f"Warning: failed to run {script_path}: {e}", "red")
+
+        # Re-scan after conversion attempt
+        onnx_files = glob.glob(os.path.join(onnx_dir, "*.onnx"))
+        if not onnx_files:
+            cprint(f"No .onnx files found in {onnx_dir}", "red")
+            return []
 
     # Extract iteration numbers and sort
     def extract_iter(filename):
