@@ -903,6 +903,31 @@ class HumanoidMimic(HumanoidChar):
         rew = torch.sqrt(foot_speed_norm)
         rew *= contact
         return torch.sum(rew, dim=1)
+
+    def _reward_foot_balance(self):
+        # Penalize COM deviation from the midpoint of two feet during double support.
+        com_pos = self.root_states[:, 0:3]
+        feet_pos = self.rigid_body_states[:, self.feet_indices, 0:3]
+        err_foot_to_com = com_pos.unsqueeze(1) - feet_pos
+
+        base_yaw_quat = quat_from_euler_xyz(
+            torch.zeros_like(self.yaw), torch.zeros_like(self.yaw), self.yaw
+        )
+        base_yaw_quat = base_yaw_quat.unsqueeze(1).repeat(1, 2, 1).reshape(-1, 4)
+        err_foot_to_com_local = quat_rotate_inverse(
+            base_yaw_quat, err_foot_to_com.reshape(-1, 3)
+        ).reshape(self.num_envs, 2, 3)
+
+        err_support = torch.sum(
+            torch.square(
+                err_foot_to_com_local[:, 0, :2] + err_foot_to_com_local[:, 1, :2]
+            ),
+            dim=1,
+        )
+
+        feet_contact = self.contact_forces[:, self.feet_indices, 2] > 5.
+        double_support = torch.logical_and(feet_contact[:, 0], feet_contact[:, 1])
+        return err_support * double_support.float()
     
     def _reward_lin_vel_z(self):
         rew = torch.square(self.base_lin_vel[:, 2])
