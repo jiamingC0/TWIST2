@@ -196,9 +196,9 @@ class G1MimicStuFutureCJMCfg(G1MimicPrivCfg):
             tracking_root_rotation = 1.0
             tracking_root_linear_vel = 1.0
             tracking_root_angular_vel = 1.0
-            tracking_keybody_pos = 2.0
+            # tracking_keybody_pos = 2.0
             
-            # tracking_keybody_pos_global = 2.0
+            tracking_keybody_pos_global = 2.0
             alive = 0.5
             # feet_slip = -0.1
             # feet_contact_forces = -5e-4      
