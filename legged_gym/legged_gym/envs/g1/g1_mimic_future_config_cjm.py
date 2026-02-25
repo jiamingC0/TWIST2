@@ -189,7 +189,7 @@ class G1MimicStuFutureCJMCfg(G1MimicPrivCfg):
             tracking_joint_dof = 2.0
             # tracking_joint_dof2 = 0.3
             
-            tracking_joint_vel = 0.2
+            # tracking_joint_vel = 0.2
             # tracking_joint_vel2 = 0.1
             # tracking_root_translation_xy = 1.0
             tracking_root_translation_z = 1.0
@@ -208,7 +208,7 @@ class G1MimicStuFutureCJMCfg(G1MimicPrivCfg):
             dof_vel = -1e-4
             # dof_acc = -5e-8
             # action_rate = -0.05
-            # action_rate = -0.01
+            action_rate = -0.02
             # feet_air_time = 5.0
             # ang_vel_xy = -0.01            
             # ankle_dof_acc = -5e-8 * 2
