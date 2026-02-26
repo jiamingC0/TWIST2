@@ -49,6 +49,7 @@ class G1MimicDistill(HumanoidMimic):
         self._ref_root_pos_delta_local[env_ids] = root_pos_delta_local
         self._ref_root_rot_delta_local[env_ids] = root_rot_delta_local
         self._ref_body_pos[env_ids] = convert_to_global_root_body_pos(root_pos=root_pos, root_rot=root_rot, body_pos=body_pos)
+        self._ref_foot_contact[env_ids] = self._motion_lib.calc_motion_foot_contact(motion_ids, motion_times)
     
     
     def _update_ref_motion(self):
@@ -67,6 +68,7 @@ class G1MimicDistill(HumanoidMimic):
         self._ref_root_pos_delta_local[:] = root_pos_delta_local
         self._ref_root_rot_delta_local[:] = root_rot_delta_local
         self._ref_body_pos[:] = convert_to_global_root_body_pos(root_pos=root_pos, root_rot=root_rot, body_pos=body_pos)
+        self._ref_foot_contact[:] = self._motion_lib.calc_motion_foot_contact(motion_ids, motion_times)
         
     def _update_motion_difficulty(self, env_ids):
         if self.obs_type == 'priv':

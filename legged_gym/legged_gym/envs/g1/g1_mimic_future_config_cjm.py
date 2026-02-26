@@ -199,6 +199,7 @@ class G1MimicStuFutureCJMCfg(G1MimicPrivCfg):
             tracking_keybody_pos = 2.0
             
             tracking_keybody_pos_global = 2.0
+            foot_contact_match = 1.0
             alive = 0.5
             feet_slip = -0.1
             feet_contact_forces = -5e-4      
@@ -340,4 +341,3 @@ class G1MimicStuFutureCJMCfgDAgger(G1MimicStuFutureCJMCfg):
         priv_encoder_dims = [64, 20]
         tanh_encoder_output = False
         fix_action_std = False
-

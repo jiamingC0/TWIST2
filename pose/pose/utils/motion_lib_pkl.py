@@ -75,6 +75,7 @@ class MotionLib:
         self._motion_root_rot_delta_local = []
         self._motion_dof_vel = []
         self._motion_local_body_pos = []
+        self._motion_foot_contact = []
         self._body_link_list = []
         
         motion_files, motion_weights, motion_task_ids= self._fetch_motion_files(motion_file)
@@ -104,6 +105,15 @@ class MotionLib:
             root_rot = torch.tensor(motion_data["root_rot"], dtype=torch.float, device=self._device)
             dof_pos = torch.tensor(motion_data["dof_pos"], dtype=torch.float, device=self._device)
             local_body_pos = torch.tensor(motion_data["local_body_pos"], dtype=torch.float, device=self._device)
+            if "foot_contact" in motion_data:
+                foot_contact = torch.tensor(motion_data["foot_contact"], dtype=torch.float, device=self._device)
+                if foot_contact.ndim != 2 or foot_contact.shape[1] < 2:
+                    raise ValueError(
+                        f"Invalid foot_contact shape in {curr_file}: {tuple(foot_contact.shape)}. "
+                        "Expected (num_frames, 2)."
+                    )
+            else:
+                foot_contact = self._infer_foot_contact_from_motion(root_pos, local_body_pos, motion_data["link_body_list"])
             if self._body_link_list is None or len(self._body_link_list) == 0:
                 self._body_link_list = motion_data["link_body_list"]
             num_frames = root_pos.shape[0]
@@ -117,10 +127,22 @@ class MotionLib:
                 root_pos[..., 2] -= lowest_body_part
                 
             try:
-                self._add_motions(root_pos, root_rot, dof_pos, local_body_pos, fps, curr_weight, curr_task_id, curr_file)
+                self._add_motions(root_pos, root_rot, dof_pos, local_body_pos, foot_contact, fps, curr_weight, curr_task_id, curr_file)
             except Exception as e:
                 print(f"Error adding motion {curr_file}: {e}")
                 continue
+            if "foot_contact" in motion_data:
+                fc_sum = foot_contact[:, :2].sum(dim=0).detach().cpu().tolist()
+                print(
+                    f"[MotionLib] foot_contact loaded from pkl: {os.path.basename(curr_file)} "
+                    f"(L={int(fc_sum[0])}, R={int(fc_sum[1])}, frames={foot_contact.shape[0]})"
+                )
+            else:
+                fc_sum = foot_contact[:, :2].sum(dim=0).detach().cpu().tolist()
+                print(
+                    f"[MotionLib] foot_contact inferred: {os.path.basename(curr_file)} "
+                    f"(L={int(fc_sum[0])}, R={int(fc_sum[1])}, frames={foot_contact.shape[0]})"
+                )
             
             
             if self._motion_decompose:
@@ -146,10 +168,11 @@ class MotionLib:
                     sub_root_rot = root_rot[start_idx:end_idx]
                     sub_dof_pos = dof_pos[start_idx:end_idx]
                     sub_local_body_pos = local_body_pos[start_idx:end_idx]
+                    sub_foot_contact = foot_contact[start_idx:end_idx]
                     # sub_weight = curr_weight + i # we increase the weight of the sub-motion by i
                     sub_weight = curr_weight
                     sub_task_id = curr_task_id
-                    self._add_motions(sub_root_pos, sub_root_rot, sub_dof_pos, sub_local_body_pos, fps, sub_weight, sub_task_id, curr_file)
+                    self._add_motions(sub_root_pos, sub_root_rot, sub_dof_pos, sub_local_body_pos, sub_foot_contact, fps, sub_weight, sub_task_id, curr_file)
                 # print(f"Decomposed {curr_file} into {num_sub_motions} sub-motions")
         
         print(f"Total number of sub-motions: {num_sub_motions_total}")
@@ -177,6 +200,7 @@ class MotionLib:
         self._motion_dof_pos = torch.cat(self._motion_dof_pos, dim=0)
         self._motion_dof_vel = torch.cat(self._motion_dof_vel, dim=0)
         self._motion_local_body_pos = torch.cat(self._motion_local_body_pos, dim=0)
+        self._motion_foot_contact = torch.cat(self._motion_foot_contact, dim=0)
         self._motion_root_pos_delta_local = torch.cat(self._motion_root_pos_delta_local, dim=0)
         self._motion_root_rot_delta_local = torch.cat(self._motion_root_rot_delta_local, dim=0)
         
@@ -190,10 +214,15 @@ class MotionLib:
         total_len = self.get_total_length()
         print("Loaded {:d} motions with a total length of {:.3f}s.".format(num_motions, total_len))
 
-    def _add_motions(self, root_pos, root_rot, dof_pos, local_body_pos, fps, curr_weight, curr_task_id, curr_file):
+    def _add_motions(self, root_pos, root_rot, dof_pos, local_body_pos, foot_contact, fps, curr_weight, curr_task_id, curr_file):
         dt = 1.0 / fps
         num_frames = root_pos.shape[0]
         curr_len = dt * (num_frames - 1)
+        if foot_contact is None:
+            foot_contact = torch.zeros((num_frames, 2), dtype=torch.float, device=self._device)
+        if foot_contact.shape[0] != num_frames:
+            raise ValueError(f"foot_contact frame mismatch in {curr_file}: {foot_contact.shape[0]} vs {num_frames}")
+        foot_contact = foot_contact[:, :2].float()
         
         root_pos_delta = root_pos[-1] - root_pos[0]
         root_pos_delta[..., -1] = 0.0
@@ -234,7 +263,37 @@ class MotionLib:
         self._motion_root_rot_delta_local.append(root_rot_delta_local)
         self._motion_dof_vel.append(dof_vel)
         self._motion_local_body_pos.append(local_body_pos)
+        self._motion_foot_contact.append(foot_contact)
         self._motion_names.append(os.path.basename(curr_file))
+
+    def _infer_foot_contact_from_motion(self, root_pos, local_body_pos, link_body_list, contact_height_eps=0.03):
+        left_candidates = [
+            "left_ankle_roll_link", "left_ankle_link", "left_foot", "left_toe", "l_ankle", "l_foot"
+        ]
+        right_candidates = [
+            "right_ankle_roll_link", "right_ankle_link", "right_foot", "right_toe", "r_ankle", "r_foot"
+        ]
+
+        def _find_index(candidates):
+            for name in candidates:
+                if name in link_body_list:
+                    return link_body_list.index(name)
+            for i, name in enumerate(link_body_list):
+                lname = name.lower()
+                for cand in candidates:
+                    if cand in lname:
+                        return i
+            return None
+
+        left_idx = _find_index(left_candidates)
+        right_idx = _find_index(right_candidates)
+        num_frames = root_pos.shape[0]
+        if left_idx is None or right_idx is None:
+            return torch.zeros((num_frames, 2), dtype=torch.float, device=self._device)
+
+        foot_z = root_pos[:, 2:3] + local_body_pos[:, [left_idx, right_idx], 2]
+        floor_z = torch.quantile(foot_z.reshape(-1), 0.02)
+        return (foot_z <= (floor_z + contact_height_eps)).float()
     
     def _compute_so3_derivative(self, rotations: torch.Tensor, dt: float) -> torch.Tensor:
         """Computes the derivative of a sequence of SO3 rotations using central differences.
@@ -399,6 +458,14 @@ class MotionLib:
         root_rot_delta_local = (1.0 - blend_unsqueeze) * root_rot_delta_local0 + blend_unsqueeze * root_rot_delta_local1
 
         return root_pos, root_rot, root_vel, root_ang_vel, dof_pos, dof_vel, local_key_body_pos, root_pos_delta_local, root_rot_delta_local
+
+    def calc_motion_foot_contact(self, motion_ids, motion_times):
+        motion_loop_num = torch.floor(motion_times / self._motion_lengths[motion_ids])
+        motion_times = motion_times - motion_loop_num * self._motion_lengths[motion_ids]
+        frame_idx0, frame_idx1, blend = self._calc_frame_blend(motion_ids, motion_times)
+        use_next = blend > 0.5
+        frame_idx = torch.where(use_next, frame_idx1, frame_idx0)
+        return self._motion_foot_contact[frame_idx]
     
     def get_key_body_idx(self, key_body_names):
         key_body_idx = []

@@ -111,6 +111,7 @@ class HumanoidMimic(HumanoidChar):
         self._ref_dof_vel = torch.zeros_like(self.dof_vel)
         self._ref_root_pos_delta_local = torch.zeros_like(self.root_states[:, 0:3])
         self._ref_root_rot_delta_local = torch.zeros_like(self.root_states[:, 3:6]) # euler angle
+        self._ref_foot_contact = torch.zeros((self.num_envs, 2), device=self.device, dtype=torch.float)
         
         self._dof_err_w = self.cfg.env.dof_err_w
         if self._dof_err_w is None:
@@ -159,6 +160,7 @@ class HumanoidMimic(HumanoidChar):
         self._ref_dof_pos[env_ids] = dof_pos
         self._ref_dof_vel[env_ids] = dof_vel
         self._ref_body_pos[env_ids] = convert_to_global_root_body_pos(root_pos=root_pos, root_rot=root_rot, body_pos=body_pos)
+        self._ref_foot_contact[env_ids] = self._motion_lib.calc_motion_foot_contact(motion_ids, motion_times)
         
     
     def _get_motion_times(self, env_ids=None):
@@ -182,6 +184,7 @@ class HumanoidMimic(HumanoidChar):
         self._ref_dof_pos[:] = dof_pos
         self._ref_dof_vel[:] = dof_vel
         self._ref_body_pos[:] = convert_to_global_root_body_pos(root_pos=root_pos, root_rot=root_rot, body_pos=body_pos)
+        self._ref_foot_contact[:] = self._motion_lib.calc_motion_foot_contact(motion_ids, motion_times)
             
     def _reset_root_states(self, env_ids, root_vel=None, root_quat=None, root_pos=None, root_ang_vel=None):
         """ Resets ROOT states position and velocities of selected environmments
@@ -903,6 +906,12 @@ class HumanoidMimic(HumanoidChar):
         rew = torch.sqrt(foot_speed_norm)
         rew *= contact
         return torch.sum(rew, dim=1)
+
+    def _reward_foot_contact_match(self):
+        feet_contact = self.contact_forces[:, self.feet_indices, 2] > 5.
+        ref_foot_contact = self._ref_foot_contact > 0.5
+        match = (feet_contact == ref_foot_contact).float()
+        return torch.sum(match, dim=1)
     
     def _reward_lin_vel_z(self):
         rew = torch.square(self.base_lin_vel[:, 2])

@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import argparse
 import time
+import sys
 import redis
 import json
 import numpy as np
@@ -11,10 +12,17 @@ import os
 import mujoco
 from mujoco.viewer import launch_passive
 import matplotlib.pyplot as plt
-from pose.utils.motion_lib_pkl import MotionLib
 from data_utils.rot_utils import euler_from_quaternion_torch, quat_rotate_inverse_torch
 
 from data_utils.params import DEFAULT_MIMIC_OBS
+
+# Ensure we import pose from the current workspace first, not a globally installed old package.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.abspath(os.path.join(_HERE, ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from pose.utils.motion_lib_pkl import MotionLib
 
 
 def build_mimic_obs(
@@ -39,6 +47,16 @@ def build_mimic_obs(
     
     # Retrieve motion frames
     root_pos, root_rot, root_vel, root_ang_vel, dof_pos, dof_vel, local_key_body_pos, root_pos_delta_local, root_rot_delta_local = motion_lib.calc_motion_frame(motion_ids, obs_motion_times)
+
+    # Retrieve foot contact for the current frame (t_step only).
+    curr_motion_ids = torch.zeros(1, dtype=torch.long, device=device)
+    curr_motion_times = torch.tensor([t_step * control_dt], dtype=torch.float, device=device)
+    if not hasattr(motion_lib, "calc_motion_foot_contact"):
+        raise RuntimeError(
+            "Loaded MotionLib has no `calc_motion_foot_contact`. "
+            "Likely importing an old pose package instead of current workspace code."
+        )
+    curr_foot_contact = motion_lib.calc_motion_foot_contact(curr_motion_ids, curr_motion_times)
 
     # Convert to euler (roll, pitch, yaw)
     roll, pitch, yaw = euler_from_quaternion_torch(root_rot, scalar_first=False)
@@ -95,7 +113,8 @@ def build_mimic_obs(
     
     return mimic_obs_buf.detach().cpu().numpy().squeeze(), root_pos.detach().cpu().numpy().squeeze(), \
         root_rot.detach().cpu().numpy().squeeze(), dof_pos.detach().cpu().numpy().squeeze(), \
-            root_vel.detach().cpu().numpy().squeeze(), root_ang_vel.detach().cpu().numpy().squeeze()
+            root_vel.detach().cpu().numpy().squeeze(), root_ang_vel.detach().cpu().numpy().squeeze(), \
+            curr_foot_contact.detach().cpu().numpy().squeeze()
 
 
 def main(args, xml_file, robot_base):
@@ -121,7 +140,25 @@ def main(args, xml_file, robot_base):
 
     # 2. Load motion library
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    import inspect
+    print(f"[Motion Server] MotionLib source: {inspect.getfile(MotionLib)}")
     motion_lib = MotionLib(args.motion_file, device=device)
+    # Diagnose reference foot contact quality on the loaded motion.
+    try:
+        if hasattr(motion_lib, "_motion_foot_contact"):
+            motion_id0 = 0
+            start_idx = int(motion_lib._motion_start_idx[motion_id0].item())
+            num_frames0 = int(motion_lib._motion_num_frames[motion_id0].item())
+            fc0 = motion_lib._motion_foot_contact[start_idx:start_idx + num_frames0]
+            fc_sum = fc0.sum(dim=0).detach().cpu().tolist()
+            print(
+                f"[Motion Server] ref foot_contact stats: frames={num_frames0}, "
+                f"left_ones={int(fc_sum[0])}, right_ones={int(fc_sum[1])}"
+            )
+        else:
+            print("[Motion Server] ref foot_contact stats: unavailable (MotionLib has no _motion_foot_contact)")
+    except Exception as e:
+        print(f"[Motion Server] ref foot_contact diagnostics failed: {e}")
     
     # 3. Prepare the steps array
     tar_motion_steps = [int(x.strip()) for x in args.steps.split(",")]
@@ -133,7 +170,7 @@ def main(args, xml_file, robot_base):
     # 4.5 Extract start frame for end frame if option is enabled
     start_frame_mimic_obs = None
     if args.send_start_frame_as_end_frame:
-        start_frame_mimic_obs, _, _, _, _, _ = build_mimic_obs(
+        start_frame_mimic_obs, _, _, _, _, _, _ = build_mimic_obs(
             motion_lib=motion_lib,
             t_step=0,
             control_dt=control_dt,
@@ -204,7 +241,7 @@ def main(args, xml_file, robot_base):
                     continue
 
             # Build a mimic obs from the motion library
-            mimic_obs, root_pos, root_rot, dof_pos, root_vel, root_ang_vel = build_mimic_obs(
+            mimic_obs, root_pos, root_rot, dof_pos, root_vel, root_ang_vel, foot_contact = build_mimic_obs(
                 motion_lib=motion_lib,
                 t_step=t_step,
                 control_dt=control_dt,
@@ -218,10 +255,15 @@ def main(args, xml_file, robot_base):
             redis_client.set(f"action_hand_left_{args.robot}", json.dumps(np.zeros(7).tolist()))
             redis_client.set(f"action_hand_right_{args.robot}", json.dumps(np.zeros(7).tolist()))
             redis_client.set(f"action_neck_{args.robot}", json.dumps(np.zeros(2).tolist()))
+            redis_client.set(f"ref_foot_contact_{args.robot}", json.dumps(foot_contact.tolist()))
             last_mimic_obs = mimic_obs
             
             # Print or log it
-            print(f"Step {t_step:4d} => mimic_obs shape = {mimic_obs.shape} published...", end="\r")
+            foot_contact_str = [int(x) for x in np.asarray(foot_contact).reshape(-1).tolist()[:2]]
+            print(
+                f"Step {t_step:4d} => mimic_obs shape = {mimic_obs.shape} foot_contact(L,R)={foot_contact_str} published...",
+                end="\r",
+            )
 
             if args.vis:
                 sim_data.qpos[:3] = root_pos
