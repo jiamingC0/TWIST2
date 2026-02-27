@@ -295,6 +295,10 @@ class OnPolicyDaggerRunnerCJM:
             regularization_scale = self.env.cfg.rewards.regularization_scale if hasattr(self.env.cfg.rewards, "regularization_scale") else 1
             average_episode_length = torch.mean(self.env.episode_length.float()).item() if hasattr(self.env, "episode_length") else 0
             mean_motion_difficulty = self.env.mean_motion_difficulty if hasattr(self.env, "mean_motion_difficulty") else 0
+            if it >= 18000:
+                self.alg.desired_kl = 0.0045
+                self.alg.clip_param = 0.15
+                self.alg.num_learning_epochs = 4
             mean_value_loss, mean_surrogate_loss, mean_priv_reg_loss, priv_reg_coef, mean_grad_penalty_loss, grad_penalty_coef, kl_teacher_student_loss = self.alg.update()
     
             stop = time.time()
@@ -355,6 +359,9 @@ class OnPolicyDaggerRunnerCJM:
         wandb_dict['Loss/entropy_coef'] = locs['entropy_coef']
         wandb_dict['Loss/learning_rate'] = self.alg.learning_rate
         wandb_dict['Loss/kl_teacher_student'] = locs['kl_teacher_student_loss']
+        wandb_dict['Stage/desired_kl'] = self.alg.desired_kl
+        wandb_dict['Stage/clip_param'] = self.alg.clip_param
+        wandb_dict['Stage/num_learning_epochs'] = self.alg.num_learning_epochs
         wandb_dict['Adaptation/hist_latent_loss'] = locs['mean_hist_latent_loss']
         wandb_dict['Adaptation/priv_reg_loss'] = locs['mean_priv_reg_loss']
         wandb_dict['Adaptation/priv_ref_lambda'] = locs['priv_reg_coef']
